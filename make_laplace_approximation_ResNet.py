@@ -100,7 +100,7 @@ with tqdm(total=len(models)) as pbar:
                     hessian_structure=hessian)
       la.fit(train_loader)
       la.optimize_prior_precision()
-      torch.save(la.state_dict(), f'laplace_models/{name}_{subset}_{hessian}_state_dict.pt')
+      torch.save(la.state_dict(), f'laplace_models_ResNet/{name}_{subset}_{hessian}_state_dict.pt')
       pbar.update(1)
 
 
