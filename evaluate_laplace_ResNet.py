@@ -103,6 +103,8 @@ with tqdm(total=len(models)) as pbar:
   for name in models:
 
       model = torch.hub.load("chenyaofo/pytorch-cifar-models", name, pretrained=True)
+      model = model.to(device) 
+      
       la = Laplace(model, "classification",
                   subset_of_weights=subset,
                   hessian_structure=hessian)

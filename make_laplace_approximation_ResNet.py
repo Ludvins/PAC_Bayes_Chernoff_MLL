@@ -90,9 +90,9 @@ with tqdm(total=len(models)) as pbar:
       model = torch.hub.load("chenyaofo/pytorch-cifar-models", name, pretrained=True)
 
       # Evaluate accuracy of the loaded model
-      accuracy = 0
-      accuracy = eval(device, model, test_loader, criterion)[0]
-      print(f'{name} accuracy: {accuracy:.2f}%')
+      #accuracy = 0
+      #accuracy = eval(device, model, test_loader, criterion)[0]
+      #print(f'{name} accuracy: {accuracy:.2f}%')
 
     
       la = Laplace(model, "classification",
