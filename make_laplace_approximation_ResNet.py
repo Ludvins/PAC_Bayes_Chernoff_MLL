@@ -88,7 +88,7 @@ with tqdm(total=len(models)) as pbar:
       pbar.set_description(f"Processing {name}")
 
       model = torch.hub.load("chenyaofo/pytorch-cifar-models", name, pretrained=True)
-
+      model = model.to(device)
       # Evaluate accuracy of the loaded model
       #accuracy = 0
       #accuracy = eval(device, model, test_loader, criterion)[0]
