@@ -12,6 +12,14 @@ from tqdm import tqdm
 
 from utils import latex_format, eval
 
+import argparse
+parser = argparse.ArgumentParser()
+
+#-db DATABASE -u USERNAME -p PASSWORD -size 20
+parser.add_argument("-ps", "--prior_structure", help="scalar, layerwise or diag", type=str)
+
+args = parser.parse_args()
+
 # Activate Latex format for matplotlib
 latex_format()
 
@@ -75,7 +83,7 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
 
 
 
-model_type = "ConvCNN"
+model_type = "ConvNN"
 labels = np.loadtxt(f"models/{model_type}_model_labels.txt", delimiter=" ", dtype = str)
 n_params = np.loadtxt(f"models/{model_type}_n_params.txt")
 
@@ -95,8 +103,8 @@ with tqdm(total=len(labels)) as pbar:
                   subset_of_weights=subset,
                   hessian_structure=hessian)
       la.fit(train_loader)
-      la.optimize_prior_precision()
-      torch.save(la.state_dict(), f'laplace_models/{labels[i]}_{subset}_{hessian}_state_dict.pt')
+      la.optimize_prior_precision(prior_structure = args.prior_structure)
+      torch.save(la.state_dict(), f'laplace_models/{labels[i]}_{subset}_{hessian}_{args.prior_structure}_state_dict.pt')
     pbar.update(1)
 
 
