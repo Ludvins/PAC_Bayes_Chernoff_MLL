@@ -16,6 +16,7 @@ parser = argparse.ArgumentParser()
 
 #-db DATABASE -u USERNAME -p PASSWORD -size 20
 parser.add_argument("-ps", "--prior_structure", help="scalar, layerwise or diag", type=str)
+parser.add_argument("--subset", help = "last_layer or all", type=str)
 
 args = parser.parse_args()
 # Activate Latex format for matplotlib
