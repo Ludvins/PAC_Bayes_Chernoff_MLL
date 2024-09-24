@@ -40,88 +40,55 @@ def latex_format():
     matplotlib.rcParams.update({"font.size": fontsize})
 
 
-def createmodel(k, random_seed, n_classes, n_channels):
-    """ Create a LeNet5 model with k times the number of channels. 
+def MLPcreatemodel(random_seed, input_shape, hidden_sizes, n_classes):
+    """ Create a MLP model 
     
     Arguments
     ---------
-    k : int
-        Multiplies the number of channels in the layers of LeNet-5.
+    input_shape : int
+    hidden_sizes : array
+		2d array with the number of neurons in each hidden layer.
     random_seed : int
                   Random number for reproducibility.
     n_classes : int
                 Number of classes in the dataset.
-    n_channels : int
-                 Number of channels in the input data.
+
     """
+
+
     torch.manual_seed(random_seed)
     torch.cuda.manual_seed(random_seed)
-    return LeNet5(n_classes, n_channels, k)
+    return MLP(input_shape, hidden_sizes, n_classes)
 
 
-class LeNet5(nn.Module):
-    def __init__(self, n_classes, input_channels, k):
-        """ Initialize the LeNet-5 model with k times the number of channels.
+
+class MLP(nn.Module):
+    def __init__(self, input_shape, hidden_sizes, n_classes):
+        super(MLP, self).__init__()
         
-        The model has 3 convolutional layers, 2 pooling layers, and 2 fully connected layers.
-        The first convolutional layer has int(6k) output channels.
-        The second convolutional layer has int(16k) output channels.
-        The third convolutional layer has int(120k) output channels.
+        # Define layers
+        layers = []
+        # Flatten layer
+        layers.append(nn.Flatten())
         
-        Arguments
-        ---------
-        n_classes : int
-            Number of classes in the dataset.
-        input_channels : int
-            Number of channels in the input data.
-        k : int
-            Multiplicative factor of the number of channels.
+        # Input size after flattening
+        input_size = torch.prod(torch.tensor(input_shape)).item()
         
-        """
-        super(LeNet5, self).__init__()
-
-        self.part1 = nn.Sequential(
-            nn.Conv2d(
-                in_channels=input_channels,
-                out_channels=int(6 * k),
-                kernel_size=5,
-                stride=1,
-            ),
-            nn.ReLU(),
-            nn.AvgPool2d(kernel_size=2),
-        )
-        self.part2 = nn.Sequential(
-            nn.Conv2d(
-                in_channels=int(6 * k),
-                out_channels=int(16 * k),
-                kernel_size=5,
-                stride=1,
-            ),
-            nn.ReLU(),
-            nn.AvgPool2d(kernel_size=2),
-        )
-        self.part3 = nn.Sequential(
-            nn.Conv2d(
-                in_channels=int(16 * k),
-                out_channels=int(120 * k),
-                kernel_size=5,
-                stride=1,
-            ),
-            nn.ReLU(),
-        )
-        self.classifier = nn.Sequential(
-            nn.Linear(in_features=int(120 * k), out_features=int(84 * k)),
-            nn.ReLU(),
-            nn.Linear(in_features=int(84 * k), out_features=n_classes),
-        )
-
+        # Hidden layers with ReLU activations
+        previous_size = input_size
+        for hidden_size in hidden_sizes:
+            layers.append(nn.Linear(previous_size, hidden_size))
+            layers.append(nn.ReLU())
+            previous_size = hidden_size
+        
+        # Output layer
+        layers.append(nn.Linear(previous_size, n_classes))
+        
+        # Combine all layers in the sequential container
+        self.model = nn.Sequential(*layers)
+        
     def forward(self, x):
-        x = self.part1(x)
-        x = self.part2(x)
-        x = self.part3(x)
-        x = torch.flatten(x, 1)
-        logits = self.classifier(x)
-        return logits
+        return self.model(x)
 
 class EarlyStopper:
     def __init__(self, patience=1, min_delta=0):
@@ -158,7 +125,7 @@ class EarlyStopper:
 
 
 
-def train(model, train_loader, learning_rate, n_iters, device, criterion):
+def train(model, name, train_loader, learning_rate, n_iters, device, criterion):
     """ Train the model using SGD with ExponentialLR scheduler and EarlyStopper
     
     Arguments
@@ -186,7 +153,10 @@ def train(model, train_loader, learning_rate, n_iters, device, criterion):
     data_iter = iter(train_loader)
     iters_per_epoch = len(data_iter)
     aux_loss = 1
-    
+
+    # Lists to store metrics
+    losses = []
+
     tq = tqdm(range(n_iters))
     for it in tq:
         # Set model to train mode
@@ -220,6 +190,9 @@ def train(model, train_loader, learning_rate, n_iters, device, criterion):
             {"Train cce": loss.detach().cpu().numpy(), "Patience": es.counter}
         )
 
+        # Append loss to the list
+        losses.append(loss.detach().cpu().numpy())
+
         # Backward pass
         loss.backward() 
         # Update the weights
@@ -231,6 +204,16 @@ def train(model, train_loader, learning_rate, n_iters, device, criterion):
             if aux_loss / iters_per_epoch < 0.01 or es.early_stop(aux_loss):
                 break
             aux_loss = 0
+
+
+    # Plot training loss curve
+    plt.figure(figsize=(10, 5))
+    plt.plot(range(1, len(losses) + 1), losses, marker='o', linestyle='-', color='b', markersize=1)
+    plt.title('Training Loss Curve '+ name)
+    plt.xlabel('Iterations')
+    plt.ylabel('Loss')
+    plt.grid(True)
+    plt.show()
 
     return model
 
@@ -280,7 +263,7 @@ def eval(device, model, loader, criterion):
             # Update the loss
             losses += loss.detach().cpu().numpy() * targets.size(0)
 
-    return correct, total, losses / total
+    return 100 * correct / total, total, losses / total
 
 def eval_laplace(device, laplace, loader, eps=1e-7):
     """ Evaluate the model on the loader using the criterion.
