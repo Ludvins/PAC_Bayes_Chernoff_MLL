@@ -9,6 +9,8 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from laplace import Laplace
 from tqdm import tqdm
+from laplace.curvature import AsdlGGN
+
 
 from utils import latex_format, eval
 import argparse
@@ -86,8 +88,6 @@ models = ['cifar10_resnet20', 'cifar10_resnet32', 'cifar10_resnet44', 'cifar10_r
           'cifar10_vgg13_bn', 'cifar10_vgg16_bn', 'cifar10_vgg19_bn']
 
 
-
-subset = "last_layer"
 hessian = "kron"
 
 with tqdm(total=len(models)) as pbar:
@@ -103,11 +103,13 @@ with tqdm(total=len(models)) as pbar:
 
     
       la = Laplace(model, "classification",
-                    subset_of_weights=subset,
-                    hessian_structure=hessian)
+                    subset_of_weights=args.subset,
+                    hessian_structure=hessian,
+                    backend=AsdlGGN)
+
       la.fit(train_loader)
       la.optimize_prior_precision(prior_structure = args.prior_structure)
-      torch.save(la.state_dict(), f'laplace_models_ResNet/{name}_{subset}_{hessian}_{args.prior_structure}_state_dict.pt')
+      torch.save(la.state_dict(), f'laplace_models_ResNet/{name}_{args.subset}_{hessian}_{args.prior_structure}_state_dict.pt')
       pbar.update(1)
 
 
