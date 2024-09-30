@@ -433,11 +433,12 @@ def eval_inverse_rate_at_lambda(log_p, lamb, s_value, device):
     return (s_value + jensen_val)/lamb - torch.mean(log_p)
 
 def compute_trace(krondecomposed):
-    blocks = []
+    trace_term = 0
+    n_params = 0
     for Qs, ls, delta in zip(krondecomposed.eigenvectors, krondecomposed.eigenvalues, krondecomposed.deltas):
         if len(ls) == 1:
             Q, l = Qs[0], ls[0]
-            blocks.append(Q @ torch.diag(torch.pow(l + delta, -1)) @ Q.T)
+            block = Q @ torch.diag(torch.pow(l + delta, -1)) @ Q.T
         else:
             Q1, Q2 = Qs
             l1, l2 = ls
@@ -450,13 +451,10 @@ def compute_trace(krondecomposed):
             else:
                 l = torch.pow(torch.outer(l1, l2) + delta, -1)
             L = torch.diag(l.flatten())
-            blocks.append(Q @ L @ Q.T)
+            block = Q @ L @ Q.T
         
-    covariances = [torch.linalg.inv(block + 1e-3 * torch.eye(block.shape[0]).to(block.device)) for block in blocks]
-    
-    trace_term = 0
-    n_params = 0
-    for block in covariances:
+        block = torch.linalg.inv(block + 1e-3 * torch.eye(block.shape[0]).to(block.device))
+
         trace_term += torch.trace(block)
         n_params += block.shape[0]
         
