@@ -115,7 +115,7 @@ with tqdm(range(len(n_params))) as t:
       s_value = (s_value + np.log(SUBSET_SIZE/delta)) / (SUBSET_SIZE - 1)
       s_values.append(s_value)
       # get item
-      Iinv = rate_function_inv(log_p, s_value, device).item()
+      Iinv, lamb, J= rate_function_inv(log_p, s_value, device).item()
 
       inverse_rates.append(Iinv)
       variances.append(variance)
