@@ -1,4 +1,4 @@
-model,parameters (M),subset,hessian,prior precision,bma test acc. (%),bma train acc. (%),bayes loss,gibbs loss,bayes loss train,gibbs loss train,neg log marginal laplace
+model,parameters,subset,hessian,prior precision,bma test acc.,bma train acc.,bayes loss,gibbs loss,bayes loss train,gibbs loss train,neg log marginal laplace
 cifar10_mobilenetv2_x0_5,0.82,last_layer,kron,2.9809165000915527,86.04,91.87,0.4481792,0.659984,0.24900487,0.36450624,0.0134876416015625
 cifar10_mobilenetv2_x0_75,1.48,last_layer,kron,2.4400699138641357,87.68,94.018,0.3894912,0.626372,0.19776124,0.3103441,0.0065452294921875
 cifar10_mobilenetv2_x1_0,2.35,last_layer,kron,2.353572130203247,88.2,94.776,0.37893736,0.6201688,0.17845851,0.28437147,0.005696302490234375
