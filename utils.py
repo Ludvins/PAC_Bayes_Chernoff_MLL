@@ -123,6 +123,58 @@ class LeNet5(nn.Module):
         logits = self.classifier(x)
         return logits
 
+
+def MLPcreatemodel(random_seed, input_shape, hidden_sizes, n_classes):
+    """ Create a MLP model 
+    
+    Arguments
+    ---------
+    input_shape : int
+    hidden_sizes : array
+		2d array with the number of neurons in each hidden layer.
+    random_seed : int
+                  Random number for reproducibility.
+    n_classes : int
+                Number of classes in the dataset.
+
+    """
+
+    torch.manual_seed(random_seed)
+    torch.cuda.manual_seed(random_seed)
+    return MLP(input_shape, hidden_sizes, n_classes)
+
+
+
+class MLP(nn.Module):
+    def __init__(self, input_shape, hidden_sizes, n_classes):
+        super(MLP, self).__init__()
+        
+        # Define layers
+        layers = []
+        # Flatten layer
+        layers.append(nn.Flatten())
+        
+        # Input size after flattening
+        input_size = torch.prod(torch.tensor(input_shape)).item()
+        
+        # Hidden layers with ReLU activations
+        previous_size = input_size
+        for hidden_size in hidden_sizes:
+            layers.append(nn.Linear(previous_size, hidden_size))
+            layers.append(nn.ReLU())
+            previous_size = hidden_size
+        
+        # Output layer
+        layers.append(nn.Linear(previous_size, n_classes))
+        
+        # Combine all layers in the sequential container
+        self.model = nn.Sequential(*layers)
+        
+    def forward(self, x):
+        return self.model(x)
+
+
+
 class EarlyStopper:
     def __init__(self, patience=1, min_delta=0):
         """ Initialize the EarlyStopper object.
@@ -295,37 +347,47 @@ def eval_laplace(device, laplace, loader, eps=1e-7):
         The data loader to evaluate on
     """
     
-    # Initialize counters
     total = 0
     bayes_loss = 0
     gibbs_loss = 0
-    
+    correct_predictions = 0  # To track correct predictions for accuracy
+
     # Iterate over the loader
     with torch.no_grad():
         for data, targets in loader:
-            
+
             # Move data to device
             total += targets.size(0)
             data = data.to(device)
             targets = targets.to(device)
-            
-            # To avoid softmax computation
+
+            # To avoid softmax computation, set likelihood to regression
             laplace.likelihood = "regression"
-            
-            # (n_samples, batch_size, output_shape) Samples are logits
-            logits_samples = laplace.predictive_samples(data, pred_type = "glm", n_samples = 512)
+
+            # (n_samples, batch_size, output_shape) - Samples are logits
+            logits_samples = laplace.predictive_samples(data, pred_type="glm", n_samples=512)
+
             # Get probabilities of true classes
-            oh_targets = F.one_hot(targets, num_classes=10)
-            
+            oh_targets = F.one_hot(targets, num_classes=logits_samples.size(-1))  # Dynamically set num_classes
+
             log_prob = torch.sum(logits_samples * oh_targets, -1) \
                 - torch.logsumexp(logits_samples, -1)
-            
-            
+
+            # Compute Bayesian and Gibbs loss
             bayes_loss -= torch.logsumexp(log_prob - torch.log(torch.tensor(512, device=device)), 0).sum()
             gibbs_loss -= log_prob.mean(0).sum()
-            
 
-    return bayes_loss/total, gibbs_loss/total
+            avg_logits = logits_samples.mean(0)  # Mean over samples (dimension 0)
+            bma_predictions = avg_logits.argmax(dim=-1)  # Get predicted class (argmax over logits)
+
+            # Compare predictions to targets and accumulate correct predictions
+            correct_predictions += (bma_predictions == targets).sum().item()
+
+    # Compute BMA accuracy
+    bma_accuracy = correct_predictions / total
+
+    return bayes_loss / total, gibbs_loss / total, bma_accuracy
+
 
 def get_log_p(device, model, loader):
     cce = nn.CrossEntropyLoss(reduction="none")  # supervised classification loss
