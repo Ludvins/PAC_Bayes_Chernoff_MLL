@@ -37,7 +37,10 @@ parser.add_argument("--p", help="csv file path", type=float)
 args = parser.parse_args()
 
 if args.p == 0:
-  args.p = "opt"
+    prior = "opt"
+else:
+    prior = "fix"
+
 # setup devices
 torch.manual_seed(RANDOM_SEED)
 if torch.cuda.is_available():
@@ -52,7 +55,7 @@ else:
 
 transforms = torchvision.transforms.Compose([
                   torchvision.transforms.ToTensor(),
-                  transforms.Normalize((0.5, 0.5, 0.5), (0.5, 0.5, 0.5)),
+                  transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
 ])
 
 
@@ -80,51 +83,62 @@ train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
 #######################################################################
 
 
-labels = np.loadtxt("models/model_labels.txt", delimiter=" ", dtype = str)
-n_params = np.loadtxt("models/n_params.txt")
+models = ['cifar10_mobilenetv2_x0_5', 'cifar10_mobilenetv2_x0_75', 'cifar10_mobilenetv2_x1_0', 'cifar10_mobilenetv2_x1_4', 'cifar10_repvgg_a0', 'cifar10_repvgg_a1', 'cifar10_repvgg_a2', 'cifar10_resnet20', 'cifar10_resnet32', 'cifar10_resnet44', 'cifar10_resnet56', 'cifar10_shufflenetv2_x0_5', 'cifar10_shufflenetv2_x1_0', 'cifar10_shufflenetv2_x1_5', 'cifar10_shufflenetv2_x2_0', 'cifar10_vgg11_bn', 'cifar10_vgg13_bn', 'cifar10_vgg16_bn', 'cifar10_vgg19_bn']
+
+n_params = [0.70, 1.37, 2.24, 4.33, 7.84, 12.82, 26.82, 0.27, 0.47, 0.66, 0.86, 0.35, 1.26, 2.49, 5.37, 9.76, 9.94, 15.25, 20.57]
+
 
 subset = "last_layer"
 hessian = "kron"
 delta = 0.05
-csv_path = f"results/laplace_{args.subset}_{args.hessian}_{args.p}_results.csv"
+csv_path = f"results/ResNet_laplace_{subset}_{hessian}_scalar_{args.p}_results.csv"
 results_laplace = pd.read_csv(csv_path)
 inverse_rates = []
 s_values = []
 variances = []
+lambdas = []
+expected_cumulant = []
+
 g_cpu = torch.Generator(device=device)
 g_cpu.manual_seed(RANDOM_SEED)
 
-with tqdm(range(len(n_params))) as t:
-  for i in range(len(labels)):
-    t.set_description(f"Model {labels[i]}")
 
-    with open(f"models/{labels[i]}.pickle", "rb") as handle:
-      model = pickle.load(handle)
+with tqdm(total=len(models)) as pbar:
+  for name in models:
+
+      model = torch.hub.load("chenyaofo/pytorch-cifar-models", name, pretrained=True)
+      model = model.to(device)
+
       la = Laplace(model, "classification",
-                        subset_of_weights=subset,
-                        hessian_structure=hessian)
-      la.load_state_dict(torch.load(f'laplace_models/{labels[i]}_{subset}_{hessian}_state_dict.pt'))
-      if args.p != "opt":
+                  subset_of_weights=subset,
+                  hessian_structure=hessian)
+      la.load_state_dict(torch.load(f'laplace_models_ResNet/{name}_{subset}_{hessian}_scalar_state_dict.pt'))
+
+      if prior != "opt":
         la.prior_precision = args.p
 
 
       log_p = get_log_p(device, la, test_loader)
       
       variance = log_p.var(dim=-1).mean().detach().cpu().numpy().item()
-      s_value = results_laplace.query(f"model=='{labels[i]}'")["normalized KL"].item() * SUBSET_SIZE 
+      s_value = results_laplace.query(f"model=='{name}'")["normalized KL"].item() * SUBSET_SIZE 
       s_value = (s_value + np.log(SUBSET_SIZE/delta)) / (SUBSET_SIZE - 1)
       s_values.append(s_value)
       # get item
-      Iinv = rate_function_inv(log_p, s_value, device).item()
+      Iinv, lamb, J = rate_function_inv(log_p, s_value, device)
 
+      expected_cumulant.append(J)
       inverse_rates.append(Iinv)
+      lambdas.append(lamb)
       variances.append(variance)
 
-      t.update(1)
+      pbar.update(1)
 
 results_laplace["inverse rate"] = inverse_rates
 results_laplace["s value"] = s_values
 results_laplace["variance"] = variances
+results_laplace["optimal lambda"] = lambdas
+results_laplace["expected cumulant"] = expected_cumulant
 
 results_laplace.to_csv(csv_path, index=False)
 print(results_laplace)

@@ -381,9 +381,9 @@ def rate_function_inv(log_p, s_value, device):
   max_lamb=torch.tensor(100000).to(device)
 
   s_value=torch.tensor(s_value).to(device)
-  inv, _, _ = aux_inv_rate_function_TernarySearch(log_p, s_value, min_lamb, max_lamb, 0.01, device)
+  inv, lamb, J = aux_inv_rate_function_TernarySearch(log_p, s_value, min_lamb, max_lamb, 0.01, device)
   
-  return inv
+  return inv,  lamb, J
 
 
 def aux_inv_rate_function_TernarySearch(log_p, s_value, low, high, epsilon, device):
