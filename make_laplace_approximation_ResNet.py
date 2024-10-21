@@ -9,9 +9,18 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from laplace import Laplace
 from tqdm import tqdm
+from laplace.curvature import AsdlGGN
+
 
 from utils import latex_format, eval
+import argparse
+parser = argparse.ArgumentParser()
 
+#-db DATABASE -u USERNAME -p PASSWORD -size 20
+parser.add_argument("-ps", "--prior_structure", help="scalar, layerwise or diag", type=str)
+parser.add_argument("--subset", help = "last_layer or all", type=str)
+
+args = parser.parse_args()
 # Activate Latex format for matplotlib
 latex_format()
 
@@ -79,8 +88,6 @@ models = ['cifar10_resnet20', 'cifar10_resnet32', 'cifar10_resnet44', 'cifar10_r
           'cifar10_vgg13_bn', 'cifar10_vgg16_bn', 'cifar10_vgg19_bn']
 
 
-
-subset = "last_layer"
 hessian = "kron"
 
 with tqdm(total=len(models)) as pbar:
@@ -88,19 +95,21 @@ with tqdm(total=len(models)) as pbar:
       pbar.set_description(f"Processing {name}")
 
       model = torch.hub.load("chenyaofo/pytorch-cifar-models", name, pretrained=True)
-
+      model = model.to(device)
       # Evaluate accuracy of the loaded model
-      accuracy = 0
-      accuracy = eval(device, model, test_loader, criterion)[0]
-      print(f'{name} accuracy: {accuracy:.2f}%')
+      #accuracy = 0
+      #accuracy = eval(device, model, test_loader, criterion)[0]
+      #print(f'{name} accuracy: {accuracy:.2f}%')
 
     
       la = Laplace(model, "classification",
-                    subset_of_weights=subset,
-                    hessian_structure=hessian)
+                    subset_of_weights=args.subset,
+                    hessian_structure=hessian,
+                    backend=AsdlGGN)
+
       la.fit(train_loader)
-      la.optimize_prior_precision()
-      torch.save(la.state_dict(), f'laplace_models_ResNet/{name}_{subset}_{hessian}_state_dict.pt')
+      la.optimize_prior_precision(prior_structure = args.prior_structure)
+      torch.save(la.state_dict(), f'laplace_models_ResNet/{name}_{args.subset}_{hessian}_{args.prior_structure}_state_dict.pt')
       pbar.update(1)
 
 

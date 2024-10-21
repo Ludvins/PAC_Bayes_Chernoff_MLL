@@ -17,7 +17,7 @@ BASEFOLDER=/home/cs.aau.dk/zp25hk/PAC_Bayes_Chernoff_MLL
 PYTHON="singularity exec --nv $BASEFOLDER/containers/pytorch-3.10 python3"
 SCRIPT=$BASEFOLDER/evaluate_laplace.py
 
-$PYTHON $SCRIPT
+$PYTHON $SCRIPT -m laplace_models -p 0.001 
 
 
 

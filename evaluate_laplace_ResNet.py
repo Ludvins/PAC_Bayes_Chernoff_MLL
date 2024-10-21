@@ -17,7 +17,9 @@ parser = argparse.ArgumentParser()
 
 #-db DATABASE -u USERNAME -p PASSWORD -size 20
 parser.add_argument("-p", "--precision", help="Prior precision. If optimized, then -p=0", type=float, default=0)
-parser.add_argument("-m", "--modelspath", help="Models folder name", default='./laplace_models')
+parser.add_argument("-m", "--modelspath", help="Models folder name", default='./laplace_models_ResNet')
+parser.add_argument("-ps", "--prior_structure", help="scalar, layerwise or diag", type=str)
+parser.add_argument("--subset", help = "last_layer or all", type=str)
 
 args = parser.parse_args()
 
@@ -96,24 +98,24 @@ Bayes_losses = []
 KLs = []
 last_layer_params = []
 prior_precisions = []
-subset = "last_layer"
 hessian = "kron"
 
 with tqdm(total=len(models)) as pbar:
   for name in models:
 
       model = torch.hub.load("chenyaofo/pytorch-cifar-models", name, pretrained=True)
+      model = model.to(device) 
+      
       la = Laplace(model, "classification",
-                  subset_of_weights=subset,
+                  subset_of_weights=args.subset,
                   hessian_structure=hessian)
-      la.load_state_dict(torch.load(f'{args.modelspath}/{name}_{subset}_{hessian}_state_dict.pt'))
+      la.load_state_dict(torch.load(f'{args.modelspath}/{name}_{args.subset}_{hessian}_state_dict.pt'))
 
-      if float(args.precision) > 0:
+      if args.prior_structure == "scalar" and float(args.precision) > 0:
           la.prior_precision = float(args.precision)
           prior = str(args.precision)
       else:
-          prior = "opt"
-          
+          prior = "opt " + args.prior_structure
 
       log_marginal.append(-la.log_marginal_likelihood(la.prior_precision).detach().cpu().numpy()/SUBSET_SIZE)
       
@@ -132,12 +134,15 @@ with tqdm(total=len(models)) as pbar:
       bayes_loss, gibbs_loss = eval_laplace(device, la, train_loader)
       Bayes_losses_train.append(bayes_loss.detach().cpu().numpy())
       Gibbs_losses_train.append(gibbs_loss.detach().cpu().numpy())
-      prior_precisions.append(la.prior_precision.detach().cpu().numpy().item())
+      if args.prior_structure == "scalar":
+        prior_precisions.append(la.prior_precision.detach().cpu().numpy().item())
+      else:
+        prior_precisions.append(prior)
       pbar.set_description(f"Model {name}")
       pbar.update(1)
 
 results = pd.DataFrame({'model': models, 
-                        'subset': subset, 'hessian': hessian, 
+                        'subset': args.subset, 'hessian': hessian, 
                         "prior precision": prior_precisions, 
                        "bayes loss": Bayes_losses, 
                        "gibbs loss": Gibbs_losses, 
@@ -147,6 +152,6 @@ results = pd.DataFrame({'model': models,
                        "neg log marginal": np.array(Gibbs_losses_train) + np.array(KLs),
                        "normalized KL": KLs,
                        "last layer params": last_layer_params})
-results.to_csv(f"results/laplaceResNet_{subset}_{hessian}_"+prior+"_results.csv", index=False)
+results.to_csv(f"results/laplaceResNet_{args.subset}_{hessian}_"+prior+"_results.csv", index=False)
 print(results)
 
