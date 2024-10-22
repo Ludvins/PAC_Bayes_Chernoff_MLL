@@ -381,8 +381,29 @@ def eval_laplace(device, laplace, loader, eps=1e-7):
             laplace.likelihood = "regression"
 
             # (n_samples, batch_size, output_shape) - Samples are logits
-            logits_samples = laplace.predictive_samples(data, pred_type="glm", n_samples=512)
-
+            #logits_samples = laplace.predictive_samples(data, pred_type="glm", n_samples=512)
+            f_mean, f_var = laplace._glm_predictive_distribution(data)
+            randn_samples = torch.randn(
+                (f_mean.shape[1], 512),
+                device=f_mean.device,
+                dtype=f_mean.dtype,
+                generator=laplace.generator,
+            )
+            if f_mean.shape == f_var.shape:
+                # diagonal covariance
+                scaled_samples = f_var.sqrt().unsqueeze(-1) * randn_samples.unsqueeze(0)
+                logits_samples = (f_mean.unsqueeze(-1) + scaled_samples).permute((2, 0, 1))
+                
+            elif f_mean.shape == f_var.shape[:2] and f_var.shape[-1] == f_mean.shape[1]:
+                # full covariance
+                scale = torch.linalg.cholesky(f_var + eps * torch.eye(f_var.shape[-1], device=device))
+                scaled_samples = torch.matmul(
+                    scale, randn_samples.unsqueeze(0)
+                )  # expand batch dim
+                logits_samples = (f_mean.unsqueeze(-1) + scaled_samples).permute((2, 0, 1)) 
+                
+                
+            
             # Get probabilities of true classes
             oh_targets = F.one_hot(targets, num_classes=logits_samples.size(-1))  # Dynamically set num_classes
 
