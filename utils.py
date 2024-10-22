@@ -367,6 +367,7 @@ def eval_laplace(device, laplace, loader, eps=1e-7):
     bayes_loss = 0
     gibbs_loss = 0
     correct_predictions = 0  # To track correct predictions for accuracy
+    generator = torch.Generator(device=device)
 
     # Iterate over the loader
     with torch.no_grad():
@@ -387,7 +388,7 @@ def eval_laplace(device, laplace, loader, eps=1e-7):
                 (f_mean.shape[1], 512),
                 device=f_mean.device,
                 dtype=f_mean.dtype,
-                generator=laplace.generator,
+                generator=generator,
             )
             if f_mean.shape == f_var.shape:
                 # diagonal covariance
