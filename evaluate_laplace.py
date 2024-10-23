@@ -104,7 +104,7 @@ KLs = []
 last_layer_params = []
 prior_precisions = []
 
-hessian = "diag"
+hessian = "Kron"
 
 with tqdm(range(len(n_params))) as t:
   for i in range(len(n_params)):
