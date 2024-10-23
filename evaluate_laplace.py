@@ -9,6 +9,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from laplace import Laplace
 from tqdm import tqdm
+import subprocess
 
 from utils import latex_format, eval, eval_laplace, compute_trace
 
@@ -51,9 +52,11 @@ if torch.cuda.is_available():
 else:
     device = torch.device("cpu")
 
+
 #######################################################################
 ############################# DATASET #################################
 #######################################################################
+
 
 transforms = torchvision.transforms.Compose([
                   torchvision.transforms.ToTensor(),
@@ -95,18 +98,25 @@ Gibbs_losses_train = []
 Bayes_losses_train = []
 Gibbs_losses = []
 Bayes_losses = []
+BMA_test_accuracy = []
+BMA_train_accuracy = []
 KLs = []
 last_layer_params = []
 prior_precisions = []
-hessian = "kron"
+
+hessian = "diag"
+
 with tqdm(range(len(n_params))) as t:
   for i in range(len(n_params)):
 
     with open(f"models/{labels[i]}.pickle", "rb") as handle:
+    
       model = pickle.load(handle)
+
       la = Laplace(model, "classification",
                   subset_of_weights=args.subset,
                   hessian_structure=hessian)
+       
       la.load_state_dict(torch.load(f'{args.modelspath}/{labels[i]}_{args.subset}_{hessian}_{args.prior_structure}_state_dict.pt'))
 
       if args.prior_structure == "scalar" and float(args.precision) > 0:
@@ -115,7 +125,7 @@ with tqdm(range(len(n_params))) as t:
       else:
           prior = "opt " + args.prior_structure
           
-      print(f"Prior precision: {la.prior_precision.device}")
+      print(f"Prior precision: {la.prior_precision}")
       log_marginal.append(-la.log_marginal_likelihood(la.prior_precision).detach().cpu().numpy()/SUBSET_SIZE)
       
       trace_term, last_layer_param = compute_trace(la.posterior_precision)
@@ -126,31 +136,42 @@ with tqdm(range(len(n_params))) as t:
       
       last_layer_params.append(last_layer_param)
       KLs.append(kl.detach().cpu().numpy().item()/SUBSET_SIZE)
-      bayes_loss, gibbs_loss = eval_laplace(device, la, test_loader)
+      bayes_loss, gibbs_loss, bma = eval_laplace(device, la, test_loader)
       Bayes_losses.append(bayes_loss.detach().cpu().numpy())
       Gibbs_losses.append(gibbs_loss.detach().cpu().numpy())
-      
-      bayes_loss, gibbs_loss = eval_laplace(device, la, train_loader)
+      BMA_test_accuracy.append(bma)
+
+      bayes_loss, gibbs_loss, bma = eval_laplace(device, la, train_loader)
       Bayes_losses_train.append(bayes_loss.detach().cpu().numpy())
       Gibbs_losses_train.append(gibbs_loss.detach().cpu().numpy())
+      BMA_train_accuracy.append(bma)
+
+
       if args.prior_structure == "scalar":
         prior_precisions.append(la.prior_precision.detach().cpu().numpy().item())
       else:
         prior_precisions.append(prior)
+      
+      del la, model, bayes_loss, gibbs_loss, bma, kl, last_layer_param
+      torch.cuda.empty_cache()  
+
       t.set_description(f"Model {labels[i]}")
       t.update(1)
 
 results = pd.DataFrame({'model': labels, 'parameters': n_params, 
                         'subset': args.subset, 'hessian': hessian, 
                         "prior precision": prior_precisions, 
-                       "bayes loss": Bayes_losses, 
-                       "gibbs loss": Gibbs_losses, 
-                       "bayes loss train": Bayes_losses_train,
-                       "gibbs loss train": Gibbs_losses_train,
-                       "neg log marginal laplace": log_marginal,
+                        "BMA test accuracy (%)": BMA_test_accuracy,
+                        "BMA train accuracy (%)": BMA_train_accuracy,
+                        "bayes loss": Bayes_losses,
+                        "gibbs loss": Gibbs_losses, 
+                        "bayes loss train": Bayes_losses_train,
+                        "gibbs loss train": Gibbs_losses_train,
+                        "neg log marginal laplace": log_marginal,
                        "neg log marginal": np.array(Gibbs_losses_train) + np.array(KLs),
                        "normalized KL": KLs,
-                       "last layer params": last_layer_params})
-results.to_csv(f"results/laplace_{model_type}_{args.subset}_{hessian}_"+prior+"_results.csv", index=False)
+                       "last layer params": last_layer_params
+                       })
+results.to_csv(f"results/laplace_{model_type}_{args.subset}_{hessian}_{args.prior_structure}_{args.precision}_results.csv", index=False)
 print(results)
 

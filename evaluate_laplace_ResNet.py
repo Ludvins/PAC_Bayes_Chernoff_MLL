@@ -87,14 +87,18 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
 #######################################################################
 
 
-models = ['cifar10_resnet20', 'cifar10_resnet32', 'cifar10_resnet44', 'cifar10_resnet56', 'cifar10_vgg11_bn', 
-          'cifar10_vgg13_bn', 'cifar10_vgg16_bn', 'cifar10_vgg19_bn']
+models = ['cifar10_mobilenetv2_x0_5', 'cifar10_mobilenetv2_x0_75', 'cifar10_mobilenetv2_x1_0', 'cifar10_mobilenetv2_x1_4', 'cifar10_repvgg_a0', 'cifar10_repvgg_a1', 'cifar10_repvgg_a2', 'cifar10_resnet20', 'cifar10_resnet32', 'cifar10_resnet44', 'cifar10_resnet56', 'cifar10_shufflenetv2_x0_5', 'cifar10_shufflenetv2_x1_0', 'cifar10_shufflenetv2_x1_5', 'cifar10_shufflenetv2_x2_0', 'cifar10_vgg11_bn', 'cifar10_vgg13_bn', 'cifar10_vgg16_bn', 'cifar10_vgg19_bn']
+
+n_params = [0.70, 1.37, 2.24, 4.33, 7.84, 12.82, 26.82, 0.27, 0.47, 0.66, 0.86, 0.35, 1.26, 2.49, 5.37, 9.76, 9.94, 15.25, 20.57]
+
 
 log_marginal = []
 Gibbs_losses_train = []
 Bayes_losses_train = []
 Gibbs_losses = []
 Bayes_losses = []
+BMA_test_acc = []
+BMA_train_acc = []
 KLs = []
 last_layer_params = []
 prior_precisions = []
@@ -109,7 +113,7 @@ with tqdm(total=len(models)) as pbar:
       la = Laplace(model, "classification",
                   subset_of_weights=args.subset,
                   hessian_structure=hessian)
-      la.load_state_dict(torch.load(f'{args.modelspath}/{name}_{args.subset}_{hessian}_state_dict.pt'))
+      la.load_state_dict(torch.load(f'{args.modelspath}/{name}_{args.subset}_{hessian}_{args.prior_structure}_state_dict.pt'))
 
       if args.prior_structure == "scalar" and float(args.precision) > 0:
           la.prior_precision = float(args.precision)
@@ -120,38 +124,52 @@ with tqdm(total=len(models)) as pbar:
       log_marginal.append(-la.log_marginal_likelihood(la.prior_precision).detach().cpu().numpy()/SUBSET_SIZE)
       
       trace_term, last_layer_param = compute_trace(la.posterior_precision)
-      
+
 
       trace_term = la.prior_precision * trace_term
       kl = 0.5 * ( trace_term - last_layer_param + la.posterior_precision.logdet() - la.log_det_prior_precision + la.scatter)    
-      
+
       last_layer_params.append(last_layer_param)
       KLs.append(kl.detach().cpu().numpy().item()/SUBSET_SIZE)
-      bayes_loss, gibbs_loss = eval_laplace(device, la, test_loader)
+      
+      bayes_loss, gibbs_loss, bma = eval_laplace(device, la, test_loader)
       Bayes_losses.append(bayes_loss.detach().cpu().numpy())
       Gibbs_losses.append(gibbs_loss.detach().cpu().numpy())
-      
-      bayes_loss, gibbs_loss = eval_laplace(device, la, train_loader)
+      BMA_test_acc.append(bma)
+
+      bayes_loss, gibbs_loss, bma = eval_laplace(device, la, train_loader)
       Bayes_losses_train.append(bayes_loss.detach().cpu().numpy())
       Gibbs_losses_train.append(gibbs_loss.detach().cpu().numpy())
+      BMA_train_acc.append(bma)
+    
+
       if args.prior_structure == "scalar":
         prior_precisions.append(la.prior_precision.detach().cpu().numpy().item())
       else:
         prior_precisions.append(prior)
+
+      # Clear memory by deleting unnecessary variables
+      del la, model, bayes_loss, gibbs_loss, bma, kl, trace_term, last_layer_param
+      torch.cuda.empty_cache()
+
       pbar.set_description(f"Model {name}")
       pbar.update(1)
 
-results = pd.DataFrame({'model': models, 
-                        'subset': args.subset, 'hessian': hessian, 
-                        "prior precision": prior_precisions, 
-                       "bayes loss": Bayes_losses, 
-                       "gibbs loss": Gibbs_losses, 
-                       "bayes loss train": Bayes_losses_train,
-                       "gibbs loss train": Gibbs_losses_train,
-                       "neg log marginal laplace": log_marginal,
+
+results = pd.DataFrame({'model': models, 'parameters': 1e6*n_params,
+                        'subset': args.subset, 'hessian': hessian,
+                        "prior precision": prior_precisions,
+                        "BMA test accuracy (%)": BMA_test_acc,
+                        "BMA train accuracy (%)": BMA_train_acc,
+                        "bayes loss": Bayes_losses,
+                        "gibbs loss": Gibbs_losses,
+                        "bayes loss train": Bayes_losses_train,
+                        "gibbs loss train": Gibbs_losses_train,
+                        "neg log marginal laplace": log_marginal,
                        "neg log marginal": np.array(Gibbs_losses_train) + np.array(KLs),
                        "normalized KL": KLs,
-                       "last layer params": last_layer_params})
-results.to_csv(f"results/laplaceResNet_{args.subset}_{hessian}_"+prior+"_results.csv", index=False)
+                       "last layer params": last_layer_params
+                       })
+results.to_csv(f"results/ResNet_laplace_{args.subset}_{hessian}_{args.prior_structure}_{args.precision}_results.csv", index=False)
 print(results)
-
+                    
