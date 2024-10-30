@@ -11,7 +11,7 @@ model_bins = [2, 10, 30]
 data_bins = range(2, 100, 3)
 n_test_samples = 10000
 n_train_samples = 100
-num_training_samples = 100  # Number of training samples to average over
+num_training_samples = 20  # Number of training samples to average over
 
 # Function to generate test data samples
 def generate_test_samples(binQ, noise=0.1):
