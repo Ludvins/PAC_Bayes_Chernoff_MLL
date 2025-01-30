@@ -6,7 +6,7 @@ import torchvision
 import pickle
 import matplotlib.pyplot as plt
 from laplace import Laplace
-from utils import latex_format, get_log_p, rate_function_inv
+from utils import latex_format, get_log_p, rate_function_inv, compute_expected_norm, compute_expected_input_gradient_norm
 from torch.nn.utils import vector_to_parameters
 import pandas as pd
 from tqdm import tqdm
@@ -81,22 +81,29 @@ train_loader = torch.utils.data.DataLoader(dataset=train_dataset,
 ############################# TRAIN MODELS ############################
 #######################################################################
 
+model_type='ConvNN'
 
-labels = np.loadtxt("models/ConvNN_model_labels.txt", delimiter=" ", dtype = str)
-n_params = np.loadtxt("models/ConvNN_n_params.txt")
+
+labels = np.loadtxt(f"models/{model_type}_model_labels.txt", delimiter=" ", dtype = str)
+
+n_params = np.loadtxt(f"models/{model_type}_n_params.txt")
 
 
 
 subset = "last_layer"
 hessian = "kron"
 delta = 0.05
-csv_path = f"results/laplace_ConvNN_{subset}_{hessian}_scalar_{args.p}_results.csv"
+
+csv_path = f"results/laplace_{model_type}_{subset}_{hessian}_scalar_{args.p}_results.csv"
 results_laplace = pd.read_csv(csv_path)
 inverse_rates = []
 s_values = []
 variances = []
 lambdas = []
 expected_cumulant = []
+expected_norms = []
+expected_input_grads = []
+
 g_cpu = torch.Generator(device=device)
 g_cpu.manual_seed(RANDOM_SEED)
 
@@ -113,8 +120,7 @@ with tqdm(range(len(n_params))) as t:
       if prior != "opt":
         la.prior_precision = args.p
 
-
-      log_p = get_log_p(device, la, test_loader)
+      log_p = get_log_p(device, la, test_loader, eps=1e-7)
       
       variance = log_p.var(dim=-1).mean().detach().cpu().numpy().item()
       s_value = results_laplace.query(f"model=='{labels[i]}'")["normalized KL"].item() * SUBSET_SIZE 
@@ -122,11 +128,16 @@ with tqdm(range(len(n_params))) as t:
       s_values.append(s_value)
       # get item
       Iinv, lamb, J = rate_function_inv(log_p, s_value, device)
+      
+      expected_norm = compute_expected_norm(la).detach().cpu().numpy().item()
+      #expected_input_grad = compute_expected_input_gradient_norm(la, test_loader).detach().cpu().numpy().item()
 
       inverse_rates.append(Iinv)
       variances.append(variance)
       lambdas.append(lamb)
       expected_cumulant.append(J)
+      expected_norms.append(expected_norm)
+      #expected_input_grads.append(expected_input_grad)
 
       t.update(1)
 
@@ -135,6 +146,8 @@ results_laplace["s value"] = s_values
 results_laplace["variance"] = variances
 results_laplace["lambda"] = lambdas
 results_laplace["expected cumulant"] = expected_cumulant
+results_laplace["expected norm"] = expected_norms
+#resuls_laplace["expected input-gradient norm"] = expected_input_grads
 
 
 results_laplace.to_csv(csv_path, index=False)

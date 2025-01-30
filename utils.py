@@ -5,11 +5,12 @@ import torch.optim as optim
 import numpy as np
 from tqdm import tqdm
 from laplace.utils import kron
-
+import torch.distributions as dist
 
 import matplotlib.pyplot as plt
 import matplotlib
 import matplotlib as mpl
+from torch.distributions.multivariate_normal import _precision_to_scale_tril
 
 
 def non_latex_format():
@@ -382,32 +383,11 @@ def eval_laplace(device, laplace, loader, eps=1e-7):
             laplace.likelihood = "regression"
 
             # (n_samples, batch_size, output_shape) - Samples are logits
-            #logits_samples = laplace.predictive_samples(data, pred_type="glm", n_samples=512)
-            f_mean, f_var = laplace._glm_predictive_distribution(data)
-            randn_samples = torch.randn(
-                (f_mean.shape[1], 512),
-                device=f_mean.device,
-                dtype=f_mean.dtype,
-                generator=generator,
-            )
-            if f_mean.shape == f_var.shape:
-                # diagonal covariance
-                scaled_samples = f_var.sqrt().unsqueeze(-1) * randn_samples.unsqueeze(0)
-                logits_samples = (f_mean.unsqueeze(-1) + scaled_samples).permute((2, 0, 1))
-                
-            elif f_mean.shape == f_var.shape[:2] and f_var.shape[-1] == f_mean.shape[1]:
-                # full covariance
-                scale = torch.linalg.cholesky(f_var + eps * torch.eye(f_var.shape[-1], device=device))
-                scaled_samples = torch.matmul(
-                    scale, randn_samples.unsqueeze(0)
-                )  # expand batch dim
-                logits_samples = (f_mean.unsqueeze(-1) + scaled_samples).permute((2, 0, 1)) 
-                
-                
+            logits_samples = laplace.predictive_samples(data, pred_type="glm", n_samples=512)
             
             # Get probabilities of true classes
-            oh_targets = F.one_hot(targets, num_classes=logits_samples.size(-1))  # Dynamically set num_classes
-
+            oh_targets = F.one_hot(targets, num_classes=logits_samples.size(-1))  
+    
             log_prob = torch.sum(logits_samples * oh_targets, -1) \
                 - torch.logsumexp(logits_samples, -1)
 
@@ -425,6 +405,84 @@ def eval_laplace(device, laplace, loader, eps=1e-7):
     bma_accuracy = correct_predictions / total
 
     return bayes_loss / total, gibbs_loss / total, bma_accuracy
+
+
+def compute_expected_norm(laplace, num_samples=512):
+    """
+    Compute the expected L2 norm of the last layer's parameters with samples from Laplace posterior.
+    Args:
+        laplace: Laplace object containing the posterior distribution.
+        num_samples: Number of posterior samples.
+    Returns:
+        Expected L2 norm.
+    """
+    samples = laplace.sample(n_samples=num_samples)
+    norms = torch.norm(samples, p=2, dim=1)
+
+    return norms.mean()
+
+
+def compute_expected_input_gradient_norm(laplace, data_loader, n_models=20, device='cuda'):
+
+    laplace.model.eval()
+    total_norm = 0.0
+    num_samples = 0
+
+    for inputs, targets in data_loader:
+        inputs.requires_grad = True
+
+        batch_norms = []
+
+        for _ in range(n_models):
+
+            model = laplace.model
+            model.load_state_dict(laplace.sample())
+            
+            outputs = model(inputs)
+            loss = nn.CrossEntropyLoss(outputs, targets)
+
+            grads = torch.autograd.grad(loss, inputs, grad_outputs=torch.ones_like(loss), create_graph=False)[0]
+
+            norm_batch = torch.norm(grads.view(grads.shape[0], -1), p=1, dim=1) #Shape: (batch_size,)
+            batch_norms.append(norm_batch)
+
+        batch_norms = torch.stack(batch_norms, dim=0).mean(dim=0)
+
+        total_norm += batch_norms.sum().item()
+        num_samples += inputs.shape[0]
+
+    return total_norm/num_samples
+
+
+def estimate_kl(laplace, num_samples=1024):
+
+    # Extract parameters
+    scalar_prec_prior = laplace.prior_precision 
+    
+    mean_posterior = laplace.mean
+    prec_posterior = laplace.posterior_precision.to_matrix()
+    L = _precision_to_scale_tril(prec_posterior)
+
+    #prec_posterior = make_psd(prec_posterior)
+
+    mean_prior = torch.zeros(mean_posterior.shape[0], device=mean_posterior.device)
+    prec_prior = scalar_prec_prior*torch.eye(mean_posterior.shape[0], device=mean_posterior.device)
+    
+    # Define the distributions
+    prior_dist = dist.MultivariateNormal(mean_prior, precision_matrix=prec_prior)
+    posterior_dist = dist.MultivariateNormal(mean_posterior, scale_tril=L)
+
+    # Sample from the posterior
+    samples_posterior = posterior_dist.sample((num_samples,))
+
+    # Compute the log probabilities under the prior and posterior
+    log_prob_posterior = posterior_dist.log_prob(samples_posterior)
+    log_prob_prior = prior_dist.log_prob(samples_posterior)
+
+    # Estimate KL divergence
+    kl_divergence = (log_prob_posterior - log_prob_prior).mean()
+
+    return kl_divergence.item()
 
 
 def get_log_p(device, model, loader):
@@ -515,7 +573,7 @@ def aux_inv_rate_function_TernarySearch(log_p, s_value, low, high, epsilon, devi
     # Return the midpoint of the final range
     mid = (low + high) / 2
     inv = eval_inverse_rate_at_lambda(log_p, mid, s_value, device)
-    print(mid, inv)
+    
     return [
         inv.detach().cpu().numpy(),
         mid.detach().cpu().numpy(),
@@ -524,13 +582,12 @@ def aux_inv_rate_function_TernarySearch(log_p, s_value, low, high, epsilon, devi
 
 def eval_inverse_rate_at_lambda(log_p, lamb, s_value, device):
     jensen_val = (
-        torch.logsumexp(lamb * log_p, -1)
-        - torch.log(torch.tensor(log_p.shape[-1], device=device))
+        torch.logsumexp(lamb * log_p, -1) - torch.log(torch.tensor(log_p.shape[-1], device=device)) - lamb*torch.mean(log_p, -1)
     ).mean(0)
-
+    print(jensen_val)
     # aux_tensor = torch.log(torch.tensor(10/0.05, device=device))
     # jensen_val = torch.log(torch.exp(jensen_val) + torch.sqrt(0.5*aux_tensor/torch.tensor(log_p.shape[-1], device=device))).mean(0)
-    return (s_value + jensen_val)/lamb - torch.mean(log_p)
+    return (s_value + jensen_val)/lamb
 
 def compute_trace(krondecomposed):
     trace_term = 0
