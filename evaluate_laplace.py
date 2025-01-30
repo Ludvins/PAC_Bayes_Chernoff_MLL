@@ -10,10 +10,12 @@ import pandas as pd
 from laplace import Laplace
 from tqdm import tqdm
 import subprocess
+from laplace.curvature import CurvlinopsGGN
 
-from utils import latex_format, eval, eval_laplace, compute_trace
+from utils import latex_format, eval, eval_laplace, compute_trace, compute_expected_norm_laplace, estimate_kl
 
 import argparse
+
 parser = argparse.ArgumentParser()
 
 #-db DATABASE -u USERNAME -p PASSWORD -size 20
@@ -84,7 +86,7 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
                           shuffle=False)
 
 
-#######################################################################
+##############################i#########################################
 ############################# TRAIN MODELS ############################
 #######################################################################
 
@@ -101,6 +103,7 @@ Bayes_losses = []
 BMA_test_accuracy = []
 BMA_train_accuracy = []
 KLs = []
+norms = []
 last_layer_params = []
 prior_precisions = []
 
@@ -128,14 +131,13 @@ with tqdm(range(len(n_params))) as t:
       print(f"Prior precision: {la.prior_precision}")
       log_marginal.append(-la.log_marginal_likelihood(la.prior_precision).detach().cpu().numpy()/SUBSET_SIZE)
       
-      trace_term, last_layer_param = compute_trace(la.posterior_precision)
+      _, last_layer_param = compute_trace(la.posterior_precision)
       
 
-      trace_term = la.prior_precision * trace_term
-      kl = 0.5 * ( trace_term - last_layer_param + la.posterior_precision.logdet() - la.log_det_prior_precision + la.scatter)    
+      kl = estimate_kl(la)
       
       last_layer_params.append(last_layer_param)
-      KLs.append(kl.detach().cpu().numpy().item()/SUBSET_SIZE)
+      KLs.append(kl/SUBSET_SIZE)
       bayes_loss, gibbs_loss, bma = eval_laplace(device, la, test_loader)
       Bayes_losses.append(bayes_loss.detach().cpu().numpy())
       Gibbs_losses.append(gibbs_loss.detach().cpu().numpy())
@@ -145,7 +147,6 @@ with tqdm(range(len(n_params))) as t:
       Bayes_losses_train.append(bayes_loss.detach().cpu().numpy())
       Gibbs_losses_train.append(gibbs_loss.detach().cpu().numpy())
       BMA_train_accuracy.append(bma)
-
 
       if args.prior_structure == "scalar":
         prior_precisions.append(la.prior_precision.detach().cpu().numpy().item())
