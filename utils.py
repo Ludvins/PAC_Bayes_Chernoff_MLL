@@ -6,7 +6,7 @@ import numpy as np
 from tqdm import tqdm
 from laplace.utils import kron
 import torch.distributions as dist
-
+import copy
 import matplotlib.pyplot as plt
 import matplotlib
 import matplotlib as mpl
@@ -407,6 +407,74 @@ def eval_laplace(device, laplace, loader, eps=1e-7):
     return bayes_loss / total, gibbs_loss / total, bma_accuracy
 
 
+def eval_extended_laplace(device, laplace, loader, eps=1e-7):
+    """ Evaluate the model on the loader using the criterion.
+
+    Arguments
+    ---------
+    device : torch.device
+        The device to evaluate on
+    model : torch.nn.Module
+        The model to evaluate
+    loader : torch.utils.data.DataLoader
+        The data loader to evaluate on
+    """
+
+    total = 0
+    bayes_loss = 0
+    gibbs_loss = 0
+    correct_predictions = 0  # To track correct predictions for accuracy
+    generator = torch.Generator(device=device)
+
+    # Iterate over the loader
+    with torch.no_grad():
+        for data, targets in loader:
+
+            # Move data to device
+            total += targets.size(0)
+            data = data.to(device)
+            targets = targets.to(device)
+
+            # To avoid softmax computation, set likelihood to regression
+            laplace.likelihood = "regression"
+
+            # Store non-laplace original params
+            original_params = [p.clone() for p in list(reversed(list(laplace.model.parameters())))[2:]]
+            
+            # Adds noise to the non-laplace parameters
+            for params in list(reversed(list(laplace.model.parameters())))[2:]:
+                noise = torch.randn_like(params)*0.01
+                params.add_(noise)
+
+            # (n_samples, batch_size, output_shape) - Samples are logits
+            logits_samples = laplace.predictive_samples(data, pred_type="glm", n_samples=512)
+            
+            # Restore the original parameters
+            for p, orig in zip(list(reversed(list(laplace.model.parameters())))[2:], original_params):
+                p.copy_(orig)
+
+            # Get probabilities of true classes
+            oh_targets = F.one_hot(targets, num_classes=logits_samples.size(-1))
+
+            log_prob = torch.sum(logits_samples * oh_targets, -1) \
+                - torch.logsumexp(logits_samples, -1)
+
+            # Compute Bayesian and Gibbs loss
+            bayes_loss -= torch.logsumexp(log_prob - torch.log(torch.tensor(512, device=device)), 0).sum()
+            gibbs_loss -= log_prob.mean(0).sum()
+
+            avg_logits = logits_samples.mean(0)  # Mean over samples (dimension 0)
+            bma_predictions = avg_logits.argmax(dim=-1)  # Get predicted class (argmax over logits)
+
+            # Compare predictions to targets and accumulate correct predictions
+            correct_predictions += (bma_predictions == targets).sum().item()
+
+    # Compute BMA accuracy
+    bma_accuracy = correct_predictions / total
+    return bayes_loss / total, gibbs_loss / total, bma_accuracy
+
+
+
 def compute_expected_norm(laplace, num_samples=512):
     """
     Compute the expected L2 norm of the last layer's parameters with samples from Laplace posterior.
@@ -422,25 +490,47 @@ def compute_expected_norm(laplace, num_samples=512):
     return norms.mean()
 
 
+def get_sampled_model(laplace):
+    """
+    Returns a new model with sampled last-layer weights from the Laplace posterior.
+    Works only for last-layer Laplace approximations.
+    """
+    sampled_params = laplace.sample(n_samples=1)[0]
+    sampled_bias = sampled_params[-10:]
+    sampled_weights = sampled_params[:-10]
+    
+    sampled_model = copy.deepcopy(laplace.model)
+    
+    for module in reversed(list(sampled_model.modules())):
+        module.bias.data = sampled_bias
+        module.weight.data = sampled_weights.reshape(module.weight.data.shape)
+        break 
+
+    return sampled_model 
+
+
+
 def compute_expected_input_gradient_norm(laplace, data_loader, n_models=20, device='cuda'):
+
+    # Only works for linear last-layers
 
     laplace.model.eval()
     total_norm = 0.0
     num_samples = 0
 
     for inputs, targets in data_loader:
+        inputs, targets = inputs.cuda(), targets.cuda()
         inputs.requires_grad = True
 
         batch_norms = []
-
+        
         for _ in range(n_models):
 
-            model = laplace.model
-            model.load_state_dict(laplace.sample())
+            model = get_sampled_model(laplace)
             
             outputs = model(inputs)
-            loss = nn.CrossEntropyLoss(outputs, targets)
-
+            ce = nn.CrossEntropyLoss()
+            loss = ce(outputs, targets)
             grads = torch.autograd.grad(loss, inputs, grad_outputs=torch.ones_like(loss), create_graph=False)[0]
 
             norm_batch = torch.norm(grads.view(grads.shape[0], -1), p=1, dim=1) #Shape: (batch_size,)
@@ -483,6 +573,19 @@ def estimate_kl(laplace, num_samples=1024):
     kl_divergence = (log_prob_posterior - log_prob_prior).mean()
 
     return kl_divergence.item()
+
+
+def extended_kl(laplace, last_layer_params, prior_mean=0, prior_precision=0.01, posterior_precision=1000):
+    
+    params = torch.cat([p.detach().flatten() for p in laplace.model.parameters()])
+    
+    posterior_mean = params[:-last_layer_params]
+    d = len(list(posterior_mean))
+    posterior_mean_norm = torch.norm(posterior_mean, p=2)
+
+    return 0.5*(d*posterior_precision/prior_precision + posterior_precision*posterior_mean_norm**2 - d +d*np.log(prior_precision/posterior_precision))
+    
+
 
 
 def get_log_p(device, model, loader):
