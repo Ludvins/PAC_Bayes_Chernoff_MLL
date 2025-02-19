@@ -407,7 +407,7 @@ def eval_laplace(device, laplace, loader, eps=1e-7):
     return bayes_loss / total, gibbs_loss / total, bma_accuracy
 
 
-def eval_extended_laplace(device, laplace, loader, eps=1e-7):
+def eval_extended_laplace(device, laplace, loader, post_variance=0.001, eps=1e-7):
     """ Evaluate the model on the loader using the criterion.
 
     Arguments
@@ -443,7 +443,7 @@ def eval_extended_laplace(device, laplace, loader, eps=1e-7):
             
             # Adds noise to the non-laplace parameters
             for params in list(reversed(list(laplace.model.parameters())))[2:]:
-                noise = torch.randn_like(params)*0.01
+                noise = torch.randn_like(params)*post_variance
                 params.add_(noise)
 
             # (n_samples, batch_size, output_shape) - Samples are logits
@@ -533,7 +533,7 @@ def compute_expected_input_gradient_norm(laplace, data_loader, n_models=20, devi
             loss = ce(outputs, targets)
             grads = torch.autograd.grad(loss, inputs, grad_outputs=torch.ones_like(loss), create_graph=False)[0]
 
-            norm_batch = torch.norm(grads.view(grads.shape[0], -1), p=1, dim=1) #Shape: (batch_size,)
+            norm_batch = torch.norm(grads.view(grads.shape[0], -1), p=2, dim=1) #Shape: (batch_size,)
             batch_norms.append(norm_batch)
 
         batch_norms = torch.stack(batch_norms, dim=0).mean(dim=0)
@@ -575,15 +575,16 @@ def estimate_kl(laplace, num_samples=1024):
     return kl_divergence.item()
 
 
-def extended_kl(laplace, last_layer_params, prior_mean=0, prior_precision=0.01, posterior_precision=1000):
+def extended_kl(laplace, last_layer_params, posterior_precision=1000):
     
     params = torch.cat([p.detach().flatten() for p in laplace.model.parameters()])
     
+    prior_prec = laplace.prior_precision
     posterior_mean = params[:-last_layer_params]
     d = len(list(posterior_mean))
     posterior_mean_norm = torch.norm(posterior_mean, p=2)
 
-    return 0.5*(d*posterior_precision/prior_precision + posterior_precision*posterior_mean_norm**2 - d +d*np.log(prior_precision/posterior_precision))
+    return 0.5*(d*posterior_precision/prior_prec + posterior_precision*posterior_mean_norm**2 - d +d*torch.log(prior_prec/posterior_precision))
     
 
 
