@@ -12,7 +12,7 @@ from tqdm import tqdm
 import subprocess
 from laplace.curvature import CurvlinopsGGN
 
-from utils import latex_format, eval, eval_laplace, compute_trace, compute_expected_norm_laplace, estimate_kl
+from utils import latex_format, eval_laplace, compute_trace, compute_expected_norm, estimate_kl, eval_extended_laplace
 
 import argparse
 
@@ -91,7 +91,7 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
 #######################################################################
 
 
-model_type = "ConvNN"
+model_type = "MLP"
 labels = np.loadtxt(f"models/{model_type}_model_labels.txt", delimiter=" ", dtype = str)
 n_params = np.loadtxt(f"models/{model_type}_n_params.txt")
 
@@ -102,6 +102,8 @@ Gibbs_losses = []
 Bayes_losses = []
 BMA_test_accuracy = []
 BMA_train_accuracy = []
+Gibbs_test_accuracy = []
+Gibbs_train_accuracy = []
 KLs = []
 norms = []
 last_layer_params = []
@@ -118,7 +120,7 @@ with tqdm(range(len(n_params))) as t:
 
       la = Laplace(model, "classification",
                   subset_of_weights=args.subset,
-                  hessian_structure=hessian)
+                   hessian_structure=hessian)
        
       la.load_state_dict(torch.load(f'{args.modelspath}/{labels[i]}_{args.subset}_{hessian}_{args.prior_structure}_state_dict.pt'))
 
@@ -138,15 +140,17 @@ with tqdm(range(len(n_params))) as t:
       
       last_layer_params.append(last_layer_param)
       KLs.append(kl/SUBSET_SIZE)
-      bayes_loss, gibbs_loss, bma = eval_laplace(device, la, test_loader)
+      bayes_loss, gibbs_loss, bma, gibbs_acc = eval_extended_laplace(device, la, test_loader)
       Bayes_losses.append(bayes_loss.detach().cpu().numpy())
       Gibbs_losses.append(gibbs_loss.detach().cpu().numpy())
       BMA_test_accuracy.append(bma)
+      Gibbs_test_accuracy.append(gibbs_acc)
 
-      bayes_loss, gibbs_loss, bma = eval_laplace(device, la, train_loader)
+      bayes_loss, gibbs_loss, bma, gibbs_acc = eval_extended_laplace(device, la, train_loader)
       Bayes_losses_train.append(bayes_loss.detach().cpu().numpy())
       Gibbs_losses_train.append(gibbs_loss.detach().cpu().numpy())
       BMA_train_accuracy.append(bma)
+      Gibbs_train_accuracy.append(gibbs_acc)
 
       if args.prior_structure == "scalar":
         prior_precisions.append(la.prior_precision.detach().cpu().numpy().item())
@@ -164,6 +168,8 @@ results = pd.DataFrame({'model': labels, 'parameters': n_params,
                         "prior precision": prior_precisions, 
                         "BMA test accuracy (%)": BMA_test_accuracy,
                         "BMA train accuracy (%)": BMA_train_accuracy,
+                        "Gibbs test accuracy (%)": Gibbs_test_accuracy,
+                        "Gibbs train accuracy (%)": Gibbs_train_accuracy,
                         "bayes loss": Bayes_losses,
                         "gibbs loss": Gibbs_losses, 
                         "bayes loss train": Bayes_losses_train,

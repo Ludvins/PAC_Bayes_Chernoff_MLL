@@ -424,6 +424,7 @@ def eval_extended_laplace(device, laplace, loader, post_variance=0.001, eps=1e-7
     bayes_loss = 0
     gibbs_loss = 0
     correct_predictions = 0  # To track correct predictions for accuracy
+    correct_gibbs_pred = 0
     generator = torch.Generator(device=device)
 
     # Iterate over the loader
@@ -465,13 +466,19 @@ def eval_extended_laplace(device, laplace, loader, post_variance=0.001, eps=1e-7
 
             avg_logits = logits_samples.mean(0)  # Mean over samples (dimension 0)
             bma_predictions = avg_logits.argmax(dim=-1)  # Get predicted class (argmax over logits)
+            
+            predictions_per_model = torch.argmax(logits_samples, dim=-1)
+            gibbs_predictions, _ = torch.mode(predictions_per_model, dim=0)
+            assert gibbs_predictions.shape == targets.shape, "Shapes of predictions and targets must match!"
+            correct_gibbs_pred += (gibbs_predictions == targets).sum().item()
 
             # Compare predictions to targets and accumulate correct predictions
             correct_predictions += (bma_predictions == targets).sum().item()
 
-    # Compute BMA accuracy
+    # Compute accuracy
     bma_accuracy = correct_predictions / total
-    return bayes_loss / total, gibbs_loss / total, bma_accuracy
+    gibbs_accuracy = correct_gibbs_pred / total
+    return bayes_loss / total, gibbs_loss / total, bma_accuracy, gibbs_accuracy
 
 
 
@@ -602,7 +609,7 @@ def get_log_p(device, model, loader):
     return torch.cat(aux)
 
 
-def get_log_p(device, laplace, loader, eps=1e-7):
+def get_log_p(device, laplace, loader, post_variance=0.001, eps=1e-7):
     """ Evaluate the model on the loader using the criterion.
     
     Arguments
@@ -631,8 +638,21 @@ def get_log_p(device, laplace, loader, eps=1e-7):
             # To avoid softmax computation
             laplace.likelihood = "regression"
             
-            # (n_samples, batch_size, output_shape) Samples are logits
-            logits_samples = laplace.predictive_samples(data, pred_type = "glm", n_samples = 512)
+            # Store non-laplace original params
+            original_params = [p.clone() for p in list(reversed(list(laplace.model.parameters())))[2:]]
+
+            # Adds noise to the non-laplace parameters
+            for params in list(reversed(list(laplace.model.parameters())))[2:]:
+                noise = torch.randn_like(params)*post_variance
+                params.add_(noise)
+
+            # (n_samples, batch_size, output_shape) - Samples are logits
+            logits_samples = laplace.predictive_samples(data, pred_type="glm", n_samples=512)
+
+            # Restore the original parameters
+            for p, orig in zip(list(reversed(list(laplace.model.parameters())))[2:], original_params):
+                p.copy_(orig)
+
             # Get probabilities of true classes
             oh_targets = F.one_hot(targets, num_classes=10)
             
@@ -657,10 +677,10 @@ def get_log_p(device, laplace, loader, eps=1e-7):
 #Binary Search for lambdas
 def rate_function_inv(log_p, s_value, device):
   min_lamb=torch.tensor(0).to(device)
-  max_lamb=torch.tensor(100000).to(device)
+  max_lamb=torch.tensor(300000).to(device)
 
   s_value=torch.tensor(s_value).to(device)
-  inv, lamb, J = aux_inv_rate_function_TernarySearch(log_p, s_value, min_lamb, max_lamb, 0.01, device)
+  inv, lamb, J = aux_inv_rate_function_TernarySearch(log_p, s_value, min_lamb, max_lamb, 0.5, device)
   
   return inv,  lamb, J
 
