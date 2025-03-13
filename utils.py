@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch
 import torch.optim as optim
 import numpy as np
+import random
 from tqdm import tqdm
 from laplace.utils import kron
 import torch.distributions as dist
@@ -39,6 +40,14 @@ def latex_format():
     plt.rcParams["figure.figsize"] = (16, 9)
     fontsize = 30
     matplotlib.rcParams.update({"font.size": fontsize})
+
+def assert_reproducibility(seed: int):
+    random.seed(seed)     # python random generator
+    np.random.seed(seed)  # numpy random generator
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def createmodel(k, random_seed, n_classes, n_channels):

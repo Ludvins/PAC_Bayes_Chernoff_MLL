@@ -1,4 +1,3 @@
-
 import torch.nn as nn
 import torch
 from torchvision import datasets, transforms
@@ -12,7 +11,7 @@ from tqdm import tqdm
 import subprocess
 from laplace.curvature import CurvlinopsGGN
 
-from utils import latex_format, eval_laplace, compute_trace, compute_expected_norm, estimate_kl, eval_extended_laplace
+from utils import latex_format, assert_reproducibility, eval_laplace, compute_trace, compute_expected_norm, estimate_kl, eval_extended_laplace
 
 import argparse
 
@@ -34,16 +33,19 @@ latex_format()
 criterion = nn.CrossEntropyLoss() # supervised classification loss
 
 # Hyper-Parameters
-RANDOM_SEED = 2147483647
+RANDOM_SEED = 15
 LEARNING_RATE = 0.01
 SUBSET_SIZE = 50000
 TEST_SUBSET_SIZE = 10000
 N_ITERS = 2000000
-BATCH_SIZE = 32
-BATCH_SIZE_TEST = 32
-IMG_SIZE = 32
+BATCH_SIZE = 16
+BATCH_SIZE_TEST = 16
+IMG_SIZE =32
 N_CLASSES = 10
 WEIGHT_DECAY = 0.01
+
+
+assert_reproducibility(RANDOM_SEED)
 
 
 # setup devices
@@ -91,7 +93,7 @@ test_loader = torch.utils.data.DataLoader(dataset=test_dataset,
 #######################################################################
 
 
-model_type = "MLP"
+model_type="ConvNN"
 labels = np.loadtxt(f"models/{model_type}_model_labels.txt", delimiter=" ", dtype = str)
 n_params = np.loadtxt(f"models/{model_type}_n_params.txt")
 
@@ -135,6 +137,8 @@ with tqdm(range(len(n_params))) as t:
       
       _, last_layer_param = compute_trace(la.posterior_precision)
       
+      del model
+      torch.cuda.empty_cache()
 
       kl = estimate_kl(la)
       
@@ -156,10 +160,12 @@ with tqdm(range(len(n_params))) as t:
         prior_precisions.append(la.prior_precision.detach().cpu().numpy().item())
       else:
         prior_precisions.append(prior)
-      
-      del la, model, bayes_loss, gibbs_loss, bma, kl, last_layer_param
-      torch.cuda.empty_cache()  
 
+      print(torch.cuda.memory_summary())      
+      del la, bayes_loss, gibbs_loss, bma, kl, last_layer_param
+      torch.cuda.empty_cache()  
+      
+      
       t.set_description(f"Model {labels[i]}")
       t.update(1)
 

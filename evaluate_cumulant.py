@@ -6,7 +6,7 @@ import torchvision
 import pickle
 import matplotlib.pyplot as plt
 from laplace import Laplace
-from utils import latex_format, get_log_p, rate_function_inv, compute_expected_norm, compute_expected_input_gradient_norm, extended_kl, eval_extended_laplace
+from utils import latex_format, assert_reproducibility,  get_log_p, rate_function_inv, compute_expected_norm, compute_expected_input_gradient_norm, extended_kl, eval_extended_laplace
 from torch.nn.utils import vector_to_parameters
 import pandas as pd
 from tqdm import tqdm
@@ -14,7 +14,7 @@ from tqdm import tqdm
 latex_format()
 
 # Hyper-Parameters
-RANDOM_SEED = 2147483647
+RANDOM_SEED = 15
 LEARNING_RATE = 0.01
 SUBSET_SIZE = 50000
 TEST_SUBSET_SIZE = 10000
@@ -24,6 +24,8 @@ BATCH_SIZE_TEST = 1000
 IMG_SIZE = 32
 N_CLASSES = 10
 WEIGHT_DECAY = 0.01
+
+assert_reproducibility(RANDOM_SEED)
 
 import argparse
 parser = argparse.ArgumentParser()
