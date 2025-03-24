@@ -216,6 +216,7 @@ class EarlyStopper:
             self.counter += 1
             if self.counter >= self.patience:
                 return True
+
         return False
 
 
@@ -239,7 +240,7 @@ def train(model, name, train_loader, learning_rate, n_iters, device, criterion):
         The loss function to optimize    
     """
     # Initialize EarlyStopper, optimizer and scheduler
-    es = EarlyStopper(patience=2)
+    es = EarlyStopper(patience=4)
     optimizer = optim.SGD(model.parameters(), lr=learning_rate, momentum=0.9)
     scheduler = torch.optim.lr_scheduler.ExponentialLR(
         optimizer, gamma=0.95
@@ -549,15 +550,15 @@ def compute_expected_input_gradient_norm(laplace, data_loader, n_models=20, devi
             loss = ce(outputs, targets)
             grads = torch.autograd.grad(loss, inputs, grad_outputs=torch.ones_like(loss), create_graph=False)[0]
 
-            norm_batch = torch.norm(grads.view(grads.shape[0], -1), p=2, dim=1) #Shape: (batch_size,)
+            norm_batch = torch.norm(grads.view(grads.shape[0], -1), p=2, dim=1)**2 #Shape: (batch_size,)
             batch_norms.append(norm_batch)
 
-        batch_norms = torch.stack(batch_norms, dim=0).mean(dim=0)
+        batch_norms = torch.stack(batch_norms, dim=0)
 
         total_norm += batch_norms.sum().item()
         num_samples += inputs.shape[0]
 
-    return total_norm/num_samples
+    return total_norm/(num_samples*n_models)
 
 
 def estimate_kl(laplace, num_samples=1024):
