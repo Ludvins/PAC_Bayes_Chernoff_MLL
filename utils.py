@@ -378,6 +378,7 @@ def eval_laplace(device, laplace, loader, eps=1e-7):
     bayes_loss = 0
     gibbs_loss = 0
     correct_predictions = 0  # To track correct predictions for accuracy
+    correct_gibbs_pred = 0
     generator = torch.Generator(device=device)
 
     # Iterate over the loader
@@ -408,13 +409,19 @@ def eval_laplace(device, laplace, loader, eps=1e-7):
             avg_logits = logits_samples.mean(0)  # Mean over samples (dimension 0)
             bma_predictions = avg_logits.argmax(dim=-1)  # Get predicted class (argmax over logits)
 
+            predictions_per_model = torch.argmax(logits_samples, dim=-1)
+            gibbs_predictions, _ = torch.mode(predictions_per_model, dim=0)
+            assert gibbs_predictions.shape == targets.shape, "Shapes of predictions and targets must match!"
+            correct_gibbs_pred += (gibbs_predictions == targets).sum().item()
+
             # Compare predictions to targets and accumulate correct predictions
             correct_predictions += (bma_predictions == targets).sum().item()
 
-    # Compute BMA accuracy
+    # Compute accuracy
     bma_accuracy = correct_predictions / total
+    gibbs_accuracy = correct_gibbs_pred / total
+    return bayes_loss / total, gibbs_loss / total, bma_accuracy, gibbs_accuracy
 
-    return bayes_loss / total, gibbs_loss / total, bma_accuracy
 
 
 def eval_extended_laplace(device, laplace, loader, post_variance=0.001, eps=1e-7):
@@ -559,6 +566,138 @@ def compute_expected_input_gradient_norm(laplace, data_loader, n_models=20, devi
         num_samples += inputs.shape[0]
 
     return total_norm/(num_samples*n_models)
+
+def kl_compare_blocks_vs_full(laplace):
+    """
+    Reconstruct each block's precision using the code snippet, compute
+    the KL contribution manually, then compare with the full NxN matrix approach.
+    """
+
+    # 1) Basic definitions
+    sigma = laplace.prior_precision       # Scalar prior precision
+    n = laplace.mean.numel()              # Total parameter dimension
+    mean_full = laplace.mean              # Posterior mean
+
+    # We'll accumulate three sums for the block-based approach
+    sum_trace_cov = 0.0
+    sum_mu_norm =   0.0
+    sum_logdet    = 0.0
+
+    offset = 0  # To slice the correct part of the mean for each block
+
+    # "exponent" is 1 
+    exponent = 1
+
+    # 2) Build blocks (precision matrices) using the snippet
+    for Qs, ls, delta in zip(laplace.posterior_precision.eigenvectors,
+                             laplace.posterior_precision.eigenvalues,
+                             laplace.posterior_precision.deltas):
+
+        if len(ls) == 1:
+            # Single-eigenvalue block
+            Q, eigval = Qs[0], ls[0]
+            # block_prec will be shape [d, d]
+            block_prec = Q @ torch.diag(torch.pow(eigval + delta, exponent)) @ Q.T
+        else:
+            # 2D Kronecker block
+            Q1, Q2 = Qs
+            l1, l2 = ls
+            Q = torch.kron(Q1, Q2)
+            if laplace.posterior_precision.damping:
+                delta_sqrt = torch.sqrt(delta)
+                eigval = torch.pow(
+                    torch.outer(l1 + delta_sqrt, l2 + delta_sqrt), exponent
+                )
+            else:
+                eigval = torch.pow(torch.outer(l1, l2) + delta, exponent)
+            L = torch.diag(eigval.flatten())
+            block_prec = Q @ L @ Q.T
+
+        
+        d = block_prec.shape[0]
+        # Get the eigenvalues of block_prec for fast calculation of the trace
+        if len(ls) == 1:
+            block_prec_eigvals = (ls[0] + delta)**exponent
+        else:
+            block_prec_eigvals = torch.pow(torch.outer(l1, l2) + delta, exponent).flatten()
+
+        # 3a) trace(Sigma_i^-1) in the KL formula actually means trace(block_prec) if block_cov is Sigma_i.
+        #     But the formula requires "sigma * sum_i trace(Sigma_i^-1)" => "sigma * trace(block_cov^-1)?"
+        #     Careful: "Sigma_i^-1" is block_prec, so "trace(Sigma_i^-1)" = trace(block_prec).
+        # We will handle the multiplication by "sigma" later in the final expression.
+
+        trace_block_cov = (1./block_prec_eigvals).sum()
+
+        # 3b) mu_i^T  mu_i
+        mu_block = laplace.mean[offset : offset + d]  # shape [d]
+        offset += d
+
+        mu_norm = torch.norm(mu_block, p=2)**2
+
+        # 3c) ln det(Sigma_i) => ln det(block_cov)
+        #     Since block_prec = Sigma_i^-1,  det(Sigma_i) = 1 / det(block_prec).
+        # => ln det(Sigma_i) = - ln det(block_prec).
+        # We'll compute logdet(block_prec) and then put a minus sign
+        logdet_block_prec = torch.logdet(block_prec)
+
+        # 3d) Accumulate in the big sums
+        sum_trace_cov += trace_block_cov
+        sum_mu_norm += mu_norm
+        sum_logdet += logdet_block_prec
+
+    if torch.isnan(sum_logdet).any():
+        print("Logdet contains NaNs")
+
+    # 4) Combine for the final block-based KL
+    # The standard formula is:
+    #
+    #  KL = 0.5 * [
+    #     sigma * sum_i( trace(Sigma_i^-1) )
+    #   + sum_i( mu_i^T Sigma_i^-1 mu_i )
+    #   + sum_i( ln det(Sigma_i) )
+    #   - n ln sigma
+    #   - n
+    # ]
+    #
+    # Where sum_i trace(Sigma_i^-1) = sum_trace_inv
+    # and sum_i ln det(Sigma_i) = sum_logdet, etc.
+
+    kl_blocks = 0.5 * (
+          1./sigma * sum_trace_cov
+        + 1./sigma * sum_mu_norm
+        + sum_logdet
+        + n*torch.log(sigma)
+        - n
+    )
+
+    # 5) Compare with the full NxN approach
+    #    We'll reconstruct the full precision matrix with .to_matrix(),
+    #    invert it, and compute the KL in one shot.
+    #prec_full = laplace.posterior_precision.to_matrix()  # shape [n,n]
+    #sigma_full = torch.inverse(prec_full)    
+
+    # 5a) sigma * trace(Sigma_full)
+    #trace_term = 1./sigma * torch.trace(sigma_full)
+
+    # 5b) mu^T mu
+    #full_mu_norm = 1./sigma * torch.norm(mean_full, p=2)**2
+
+    # 5c) ln det(Sigma_full)
+    #logdet_Sigma_full = torch.logdet(prec_full).item()
+
+    #kl_full = 0.5 * (
+    #      trace_term
+    #    + full_mu_norm
+    #    + logdet_Sigma_full
+    #    + n*torch.log(sigma)
+    #    - n
+    #)
+
+    # 6) Print or return for comparison
+    print(f"KL (block-by-block) = {kl_blocks.item():.6f}")
+    #print(f"KL (full matrix)    = {kl_full.item():.6f}")
+
+    return kl_blocks
 
 
 def estimate_kl(laplace, num_samples=1024):
