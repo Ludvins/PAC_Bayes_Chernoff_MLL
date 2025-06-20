@@ -123,6 +123,36 @@ def mfvi_metrics(mfvi_model):
     n_samples = len(test_dataset)
     return correct / n_samples, nll / n_samples
 
+
+def kl_mfvi_to_gaussian_prior(mfvi_model, prior_precision: float | torch.Tensor) -> torch.Tensor:
+
+    mus, psis = [], []
+
+    # 1. gather variational parameters -------------------------
+    for name, p in mfvi_model.named_parameters():
+        if name.endswith("mu"):
+            mus.append(p)
+        elif name.endswith("psi"):
+            psis.append(p)
+
+    if len(mus) != len(psis) or len(mus) == 0:
+        raise RuntimeError("Mismatch: found %d mus but %d psis" % (len(mus), len(psis)))
+
+    # 2. compute KL term --------------------------------------
+    prior_var = 1.0 / prior_precision            # σ²ₚ
+    kl_total  = torch.tensor(0.0, device=mus[0].device)
+
+    for mu, psi in zip(mus, psis):
+        var_q  = torch.exp(2.0 * psi)            # σ²_q  (because ψ = log σ)
+        kl = 0.5 * torch.sum(
+              torch.log(prior_var / var_q)       # log σ²ₚ / σ²_q
+            + (var_q + mu.pow(2)) / prior_var
+            - 1.0
+        )
+        kl_total = kl_total + kl
+
+    return kl_total
+
 # ---------------------------------------------------------------------------
 # Main loop over stored checkpoints
 # ---------------------------------------------------------------------------
@@ -150,15 +180,37 @@ with tqdm(total=len(labels)) as pbar:
             prior_precision=1.0,
             seed=RANDOM_SEED,
         )
-        mfvi.fit(train_loader, 5_000, verbose=True)
+        mfvi.fit(train_loader, 5_00, verbose=True)
+        
+        with open(f'mfvi_models/{label}.state_dict', 'wb') as handle:
+            torch.save({'model': mfvi.state_dict()}, handle)
+            
+            
+            
+            
+            
+            
+            
+        with open(f'mfvi_models/{label}.state_dict', 'rb') as handle:
+            checkpoint = torch.load(handle, map_location=device)   # {'model': …}
+            
+        mfvi = MFVI(
+            copy.deepcopy(map_model),
+            n_samples=200,
+            likelihood="classification",
+            prior_precision=1.0,
+            seed=RANDOM_SEED,
+        )
+        mfvi.load_state_dict(checkpoint["model"])           
         mfvi_acc, mfvi_nll = mfvi_metrics(mfvi)
-
-        # -------------------------------------------------------------------
-        # Report
-        # -------------------------------------------------------------------
+        
+        KL = kl_mfvi_to_gaussian_prior(mfvi, prior_precision=1.0)
+                
+                
         print(
             f"{label} | MAP  acc={map_acc:.4f}, nll={map_nll:.4f}  | "
             f"MFVI acc={mfvi_acc:.4f}, nll={mfvi_nll:.4f}"
+            f"  | KL={KL:.4f}"
         )
 
         pbar.update(1)
