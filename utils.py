@@ -567,6 +567,41 @@ def compute_expected_input_gradient_norm(laplace, data_loader, n_models=20, devi
 
     return total_norm/(num_samples*n_models)
 
+def compute_expected_input_gradient_norm2(laplace, data_loader, n_models=20, device='cuda'):
+
+    # Only works for linear last-layers
+
+    laplace.model.eval()
+    total_norm = 0.0
+    num_samples = 0
+
+    for inputs, targets in data_loader:
+        inputs, targets = inputs.cuda(), targets.cuda()
+        inputs.requires_grad = True
+
+        batch_norms = []
+        
+        for _ in range(n_models):
+
+            model = get_sampled_model(laplace)
+            
+            outputs = model(inputs)
+            ce = nn.CrossEntropyLoss()
+            loss = ce(outputs, targets)
+            loss.backwards()
+            grads = inputs.grad
+            norm_batch = torch.norm(grads.view(grads.shape[0], -1), p=2, dim=1)**2 #Shape: (batch_size,)
+            batch_norms.append(norm_batch)
+            
+            model.zero_grad()
+
+        batch_norms = torch.stack(batch_norms, dim=0)
+
+        total_norm += batch_norms.sum().item()
+        num_samples += inputs.shape[0]
+
+    return total_norm/(num_samples*n_models)
+
 def kl_compare_blocks_vs_full(laplace):
     """
     Reconstruct each block's precision using the code snippet, compute
