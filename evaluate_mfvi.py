@@ -143,25 +143,26 @@ def kl_mfvi_to_gaussian_prior(mfvi_model, prior_precision: float | torch.Tensor)
 parser = argparse.ArgumentParser()
 parser.add_argument("--dir", default="mfvi_models", help="where *.state_dict live")
 parser.add_argument("--csv", default="metrics.csv", help="output csv")
+parser.add_argument("--prior", default=1.0, type=float, help="prior precision")
 args = parser.parse_args()
 
-# --------------------------- data --------------------------------
+# --------------------------- Data --------------------------------
 transform = transforms.Compose(
     [transforms.ToTensor(), transforms.Normalize((0.5,)*3, (0.5,)*3)]
 )
 
 train_dataset = torch.utils.data.Subset(
     datasets.CIFAR10("cifar_data", train=True, transform=transform, download=True),
-    range(50_000),
+    range(5_000),
 )
 train_loader = DataLoader(train_dataset, batch_size=2_00, shuffle=False)
 
 
 test_dataset = torch.utils.data.Subset(
     datasets.CIFAR10("cifar_data", train=False, transform=transform, download=True),
-    range(10_000),
+    range(5_000),
 )
-test_loader = DataLoader(test_dataset, batch_size=1_000, shuffle=False)
+test_loader = DataLoader(test_dataset, batch_size=2_00, shuffle=False)
 
 # --------------------------- loop --------------------------------
 
@@ -189,34 +190,35 @@ with tqdm(range(len(n_params))) as bar:
         # ---------------------------------------------------------
         mfvi = MFVI(
             copy.deepcopy(map_model),
-            n_samples=200,
+            n_samples=64,
             likelihood="classification",
-            prior_precision=1.0,
+            prior_precision=args.prior,
             seed=RANDOM_SEED,
         )
-        ckpt = torch.load(f'{args.dir}/{labels[i]}.state_dict', map_location=device)
+        ckpt = torch.load(f'{args.dir}/{labels[i]}_{args.prior}.state_dict', map_location=device)
         mfvi.load_state_dict(ckpt["model"])
 
         bayes_loss_test, gibbs_loss_test, bma_acc_test, gibbs_acc_test  = mfvi_metrics(mfvi, test_loader)
         bayes_loss_train, gibbs_loss_train, bma_acc_train, gibbs_acc_train = mfvi_metrics(mfvi, train_loader)
-        kl = kl_mfvi_to_gaussian_prior(mfvi, prior_precision=1.0).item()
+        kl = kl_mfvi_to_gaussian_prior(mfvi, prior_precision=args.prior).item()
 
         # ---------------------------------------------------------
         records.append(
             dict(label=label,
                  map_acc_test=map_acc,      
                  map_nll_test=map_nll,
-                 bayes_loss_test=bayes_loss_test,
-                 gibbs_loss_test=gibbs_loss_test,
-                 bayes_loss_train=bayes_loss_train,
-                 gibbs_loss_train=gibbs_loss_train,
+                 bayes_loss_test=bayes_loss_test.cpu().numpy().item(),
+                 gibbs_loss_test=gibbs_loss_test.cpu().numpy().item(),
+                 bayes_loss_train=bayes_loss_train.cpu().numpy().item(),
+                 gibbs_loss_train=gibbs_loss_train.cpu().numpy().item(),
                  bma_acc_test=bma_acc_test,
                  bma_acc_train=bma_acc_train,
-                 kl=kl)
+                 kl=kl
+                 )
         )
         bar.update(1)
 
 # --------------------------- CSV ---------------------------------
 df = pd.DataFrame.from_records(records)
-df.to_csv(args.csv, index=False)
+df.to_csv(f"results/ConvNN_mfvi_{args.prior}.csv", index=False)
 print(f"\nSaved metrics for {len(df)} checkpoints {args.csv}")

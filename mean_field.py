@@ -34,7 +34,10 @@ from bayesipy.mfvi import MFVI  # noqa: E402
 # ---------------------------------------------------------------------------
 parser = argparse.ArgumentParser()
 parser.add_argument("--subset", help="last_layer or all", type=str, default="all")
+parser.add_argument("--prior", help="prior precision", type=float, default=1.0)
 args = parser.parse_args()
+
+prior_precision=args.prior
 
 # ---------------------------------------------------------------------------
 # General setup
@@ -177,12 +180,12 @@ with tqdm(total=len(labels)) as pbar:
             copy.deepcopy(map_model),
             n_samples=200,
             likelihood="classification",
-            prior_precision=1.0,
+            prior_precision=prior_precision,
             seed=RANDOM_SEED,
         )
-        mfvi.fit(train_loader, 5_00, verbose=True)
+        mfvi.fit(train_loader, 10_000, verbose=True)
         
-        with open(f'mfvi_models/{label}.state_dict', 'wb') as handle:
+        with open(f'mfvi_models/{label}_{prior_precision}.state_dict', 'wb') as handle:
             torch.save({'model': mfvi.state_dict()}, handle)
             
             
@@ -191,20 +194,20 @@ with tqdm(total=len(labels)) as pbar:
             
             
             
-        with open(f'mfvi_models/{label}.state_dict', 'rb') as handle:
+        with open(f'mfvi_models/{label}_{prior_precision}.state_dict', 'rb') as handle:
             checkpoint = torch.load(handle, map_location=device)   # {'model': …}
             
         mfvi = MFVI(
             copy.deepcopy(map_model),
             n_samples=200,
             likelihood="classification",
-            prior_precision=1.0,
+            prior_precision=prior_precision,
             seed=RANDOM_SEED,
         )
         mfvi.load_state_dict(checkpoint["model"])           
         mfvi_acc, mfvi_nll = mfvi_metrics(mfvi)
         
-        KL = kl_mfvi_to_gaussian_prior(mfvi, prior_precision=1.0)
+        KL = kl_mfvi_to_gaussian_prior(mfvi, prior_precision=prior_precision)
                 
                 
         print(
