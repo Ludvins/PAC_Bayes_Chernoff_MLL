@@ -3,6 +3,7 @@ import torch.nn.functional as F
 import torch
 import torch.optim as optim
 import numpy as np
+import scipy
 import random
 from tqdm import tqdm
 from laplace.utils import kron
@@ -567,41 +568,6 @@ def compute_expected_input_gradient_norm(laplace, data_loader, n_models=20, devi
 
     return total_norm/(num_samples*n_models)
 
-def compute_expected_input_gradient_norm2(laplace, data_loader, n_models=20, device='cuda'):
-
-    # Only works for linear last-layers
-
-    laplace.model.eval()
-    total_norm = 0.0
-    num_samples = 0
-
-    for inputs, targets in data_loader:
-        inputs, targets = inputs.cuda(), targets.cuda()
-        inputs.requires_grad = True
-
-        batch_norms = []
-        
-        for _ in range(n_models):
-
-            model = get_sampled_model(laplace)
-            
-            outputs = model(inputs)
-            ce = nn.CrossEntropyLoss()
-            loss = ce(outputs, targets)
-            loss.backwards()
-            grads = inputs.grad
-            norm_batch = torch.norm(grads.view(grads.shape[0], -1), p=2, dim=1)**2 #Shape: (batch_size,)
-            batch_norms.append(norm_batch)
-            
-            model.zero_grad()
-
-        batch_norms = torch.stack(batch_norms, dim=0)
-
-        total_norm += batch_norms.sum().item()
-        num_samples += inputs.shape[0]
-
-    return total_norm/(num_samples*n_models)
-
 def kl_compare_blocks_vs_full(laplace):
     """
     Reconstruct each block's precision using the code snippet, compute
@@ -628,33 +594,32 @@ def kl_compare_blocks_vs_full(laplace):
                              laplace.posterior_precision.eigenvalues,
                              laplace.posterior_precision.deltas):
 
-        #if len(ls) == 1:
-        #    # Single-eigenvalue block
-        #    Q, eigval = Qs[0], ls[0]
-        #    # block_prec will be shape [d, d]
-        #    block_prec = Q @ torch.diag(torch.pow(eigval + delta, exponent)) @ Q.T
-        #else:
+        if len(ls) == 1:
+            # Single-eigenvalue block
+            Q, eigval = Qs[0], ls[0]
+            # block_prec will be shape [d, d]
+            block_prec = Q @ torch.diag(torch.pow(eigval + delta, exponent)) @ Q.T
+        else:
             # 2D Kronecker block
-        #    Q1, Q2 = Qs
-        #    l1, l2 = ls
-        #    Q = torch.kron(Q1, Q2)
-        #    if laplace.posterior_precision.damping:
-        #        delta_sqrt = torch.sqrt(delta)
-        #        eigval = torch.pow(
-        #            torch.outer(l1 + delta_sqrt, l2 + delta_sqrt), exponent
-        #        )
-        #    else:
-        #        eigval = torch.pow(torch.outer(l1, l2) + delta, exponent)
-        #    L = torch.diag(eigval.flatten())
-        #    block_prec = Q @ L @ Q.T
+            Q1, Q2 = Qs
+            l1, l2 = ls
+            Q = torch.kron(Q1, Q2)
+            if laplace.posterior_precision.damping:
+                delta_sqrt = torch.sqrt(delta)
+                eigval = torch.pow(
+                    torch.outer(l1 + delta_sqrt, l2 + delta_sqrt), exponent
+                )
+            else:
+                eigval = torch.pow(torch.outer(l1, l2) + delta, exponent)
+            L = torch.diag(eigval.flatten())
+            block_prec = Q @ L @ Q.T
 
         
-        d = Qs[0].shape[0]
+        d = block_prec.shape[0]
         # Get the eigenvalues of block_prec for fast calculation of the trace
         if len(ls) == 1:
             block_prec_eigvals = (ls[0] + delta)**exponent
         else:
-            l1, l2 = ls
             block_prec_eigvals = torch.pow(torch.outer(l1, l2) + delta, exponent).flatten()
 
         # 3a) trace(Sigma_i^-1) in the KL formula actually means trace(block_prec) if block_cov is Sigma_i.
@@ -674,7 +639,7 @@ def kl_compare_blocks_vs_full(laplace):
         #     Since block_prec = Sigma_i^-1,  det(Sigma_i) = 1 / det(block_prec).
         # => ln det(Sigma_i) = - ln det(block_prec).
         # We'll compute logdet(block_prec) and then put a minus sign
-        logdet_block_prec = torch.sum(torch.log(block_prec_eigvals))
+        logdet_block_prec = torch.logdet(block_prec)
 
         # 3d) Accumulate in the big sums
         sum_trace_cov += trace_block_cov
@@ -806,9 +771,6 @@ def get_log_p(device, laplace, loader, post_variance=0.001, eps=1e-7):
     loader : torch.utils.data.DataLoader
         The data loader to evaluate on
     """
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-        torch.cuda.reset_peak_memory_stats()  
     
     # Initialize counters
     total = 0
@@ -825,21 +787,9 @@ def get_log_p(device, laplace, loader, post_variance=0.001, eps=1e-7):
             
             # To avoid softmax computation
             laplace.likelihood = "regression"
-            
-            # Store non-laplace original params
-            #original_params = [p.clone() for p in list(reversed(list(laplace.model.parameters())))[2:]]
-
-            # Adds noise to the non-laplace parameters
-            #for params in list(reversed(list(laplace.model.parameters())))[2:]:
-            #    noise = torch.randn_like(params)*post_variance
-            #    params.add_(noise)
 
             # (n_samples, batch_size, output_shape) - Samples are logits
-            logits_samples = laplace.predictive_samples(data, pred_type="glm", n_samples=128)
-
-            # Restore the original parameters
-            #for p, orig in zip(list(reversed(list(laplace.model.parameters())))[2:], original_params):
-            #    p.copy_(orig)
+            logits_samples = laplace.predictive_samples(data, pred_type="glm", n_samples=512)
 
             # Get probabilities of true classes
             oh_targets = F.one_hot(targets, num_classes=10)
@@ -848,23 +798,13 @@ def get_log_p(device, laplace, loader, post_variance=0.001, eps=1e-7):
                 - torch.logsumexp(logits_samples, -1)
             
             log_p.append(log_prob)
+
     return torch.cat(log_p, 1)
-# #Binary Search for lambdas
-# def rate_function(log_p, s_value, device):
-#   if (s_value<0):
-#     min_lamb=torch.tensor(-10000).to(device)
-#     max_lamb=torch.tensor(0).to(device)
-#   else:
-#     min_lamb=torch.tensor(0).to(device)
-#     max_lamb=torch.tensor(10000).to(device)
 
-#   s_value=torch.tensor(s_value).to(device)
-#   return aux_rate_function_TernarySearch(log_p, s_value, min_lamb, max_lamb, 0.001)
 
-#Binary Search for lambdas
 def rate_function_inv(log_p, s_value, device):
   min_lamb=torch.tensor(0).to(device)
-  max_lamb=torch.tensor(500000).to(device)
+  max_lamb=torch.tensor(300000).to(device)
 
   s_value=torch.tensor(s_value).to(device)
   inv, lamb, J = aux_inv_rate_function_TernarySearch(log_p, s_value, min_lamb, max_lamb, 0.5, device)
@@ -973,3 +913,37 @@ def inverse_rate_function(model, lambdas, rate_vals):
 
 
 
+def get_log_p_mfvi(device, mfvi_model, loader, num_samples=128):
+    """Get log probabilities from MFVI model samples"""
+    log_probs = []
+    
+    # Iterate over the loader
+    with torch.no_grad():
+        for data, targets in loader:
+            data = data.to(device)
+            targets = targets.to(device)
+            
+            # Get logits samples from MFVI model
+            # Shape: (num_samples, batch_size, num_classes)
+            logits_samples = mfvi_model.predict(data)
+            
+            # Get probabilities of true classes using one-hot encoding
+            oh_targets = F.one_hot(targets, num_classes=logits_samples.size(-1))
+            
+            # Compute log probabilities
+            log_prob = torch.sum(logits_samples * oh_targets, -1) \
+                      - torch.logsumexp(logits_samples, -1)
+            
+            log_probs.append(log_prob)
+    
+    # Concatenate all batches
+    # Shape: (num_samples, total_data_points)
+    return torch.cat(log_probs, 1)
+
+def rate_function_inv_mfvi(mfvi_model, loader, s_value, device, num_samples=128):
+    """Compute rate function inverse for MFVI model"""
+    # Get log probabilities using MFVI sampling
+    log_p = get_log_p_mfvi(device, mfvi_model, loader, num_samples)
+    
+    # Use the existing rate_function_inv with the MFVI samples
+    return rate_function_inv(log_p, s_value, device)

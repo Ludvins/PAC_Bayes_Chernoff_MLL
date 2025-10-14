@@ -9,6 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from bayesipy.mfvi import MFVI                      
 from utils import eval as eval_utils, latex_format  
+from utils import rate_function_inv_mfvi, get_log_p_mfvi
 
 RANDOM_SEED = 2147483647
 LEARNING_RATE = 0.01
@@ -201,6 +202,8 @@ with tqdm(range(len(n_params))) as bar:
         bayes_loss_test, gibbs_loss_test, bma_acc_test, gibbs_acc_test  = mfvi_metrics(mfvi, test_loader)
         bayes_loss_train, gibbs_loss_train, bma_acc_train, gibbs_acc_train = mfvi_metrics(mfvi, train_loader)
         kl = kl_mfvi_to_gaussian_prior(mfvi, prior_precision=args.prior).item()
+        s_value = (kl + np.log(SUBSET_SIZE/0.01))/(SUBSET_SIZE)
+        Iinv, lamb, J = rate_function_inv_mfvi(mfvi, test_loader, s_value, device)
 
         # ---------------------------------------------------------
         records.append(
@@ -213,7 +216,8 @@ with tqdm(range(len(n_params))) as bar:
                  gibbs_loss_train=gibbs_loss_train.cpu().numpy().item(),
                  bma_acc_test=bma_acc_test,
                  bma_acc_train=bma_acc_train,
-                 kl=kl
+                 kl=kl,
+                 inverse_rate=Iinv.cpu().numpy().item()
                  )
         )
         bar.update(1)
