@@ -9,7 +9,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from bayesipy.mfvi import MFVI                      
 from utils import eval as eval_utils, latex_format  
-from utils import rate_function_inv_mfvi, get_log_p_mfvi
+from utils import rate_function_inv, get_log_p_mfvi
 
 RANDOM_SEED = 2147483647
 LEARNING_RATE = 0.01
@@ -161,7 +161,7 @@ train_loader = DataLoader(train_dataset, batch_size=2_00, shuffle=False)
 
 test_dataset = torch.utils.data.Subset(
     datasets.CIFAR10("cifar_data", train=False, transform=transform, download=True),
-    range(5_000),
+    range(10_000),
 )
 test_loader = DataLoader(test_dataset, batch_size=2_00, shuffle=False)
 
@@ -203,7 +203,10 @@ with tqdm(range(len(n_params))) as bar:
         bayes_loss_train, gibbs_loss_train, bma_acc_train, gibbs_acc_train = mfvi_metrics(mfvi, train_loader)
         kl = kl_mfvi_to_gaussian_prior(mfvi, prior_precision=args.prior).item()
         s_value = (kl + np.log(SUBSET_SIZE/0.01))/(SUBSET_SIZE)
-        Iinv, lamb, J = rate_function_inv_mfvi(mfvi, test_loader, s_value, device)
+        log_p = get_log_p_mfvi(device, mfvi, test_loader, num_samples=64)
+        Iinv, lamb, J = rate_function_inv(log_p, s_value, device)
+        variance = log_p.var(dim=0).mean().cpu().numpy().item()
+
 
         # ---------------------------------------------------------
         records.append(
@@ -217,7 +220,8 @@ with tqdm(range(len(n_params))) as bar:
                  bma_acc_test=bma_acc_test,
                  bma_acc_train=bma_acc_train,
                  kl=kl,
-                 inverse_rate=Iinv.cpu().numpy().item()
+                 inverse_rate=Iinv,
+                 variance=variance
                  )
         )
         bar.update(1)
